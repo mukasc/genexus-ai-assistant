@@ -176,6 +176,43 @@ function App() {
             </div>
           </div>
 
+          <div className="actions-section">
+            <button 
+              onClick={() => setShowIngestionMenu(!showIngestionMenu)} 
+              className="action-button ingestion-button"
+              disabled={ingesting}
+            >
+              📚 Ingest Documents
+            </button>
+            
+            {showIngestionMenu && !ingesting && (
+              <div className="ingestion-menu">
+                <button 
+                  onClick={() => startIngestion('pdf')}
+                  className="ingestion-option"
+                  data-testid="ingest-pdf-button"
+                >
+                  📄 From PDF Files
+                  <span className="option-desc">Index PDFs from docs/ folder</span>
+                </button>
+                <button 
+                  onClick={() => startIngestion('web')}
+                  className="ingestion-option"
+                  data-testid="ingest-web-button"
+                >
+                  🌐 From GeneXus Website
+                  <span className="option-desc">Scrape official documentation</span>
+                </button>
+              </div>
+            )}
+            
+            {ingestionMessage && (
+              <div className={`ingestion-status ${ingesting ? 'ingesting' : ''}`}>
+                {ingesting ? '⏳' : '✅'} {ingestionMessage}
+              </div>
+            )}
+          </div>
+
           {messages.length > 0 && (
             <button onClick={clearChat} className="clear-button">
               🗑️ Clear Chat
