@@ -207,6 +207,12 @@ async def health_check():
     elif not db_loaded:
         message = "Vector database not loaded. Run ingestion scripts."
     
+    logger.info("Health check requested", extra={
+        "status": status,
+        "api_configured": api_configured,
+        "db_loaded": db_loaded
+    })
+    
     return HealthResponse(
         status=status,
         api_key_configured=api_configured,
