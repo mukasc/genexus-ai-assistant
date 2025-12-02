@@ -55,13 +55,11 @@ class IndexStatusResponse(BaseModel):
     document_count: int
     message: str
 
-class IngestionRequest(BaseModel):
-    source: str  # "pdf" or "web"
-
 class IngestionResponse(BaseModel):
     status: str
     message: str
     progress: Optional[str] = None
+    chunks_created: Optional[int] = None
 
 # Initialize RAG system
 def initialize_rag():
