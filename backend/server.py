@@ -409,7 +409,8 @@ async def root():
             "health": "/api/health",
             "chat": "/api/chat",
             "index_status": "/api/index-status",
-            "ingest": "/api/ingest"
+            "ingest_pdf": "/api/ingest-pdf",
+            "ingest_url": "/api/ingest-url"
         }
     }
 
