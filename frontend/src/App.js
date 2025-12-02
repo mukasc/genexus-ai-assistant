@@ -97,6 +97,34 @@ function App() {
     setMessages([]);
   };
 
+  const startIngestion = async (source) => {
+    setIngesting(true);
+    setShowIngestionMenu(false);
+    
+    const sourceName = source === 'pdf' ? 'PDF documents' : 'GeneXus website';
+    setIngestionMessage(`Starting ingestion from ${sourceName}...`);
+
+    try {
+      const response = await axios.post(`${BACKEND_URL}/api/ingest`, {
+        source: source
+      });
+
+      setIngestionMessage(response.data.message + ' Check back in a few minutes.');
+      
+      // Refresh index status after a delay
+      setTimeout(() => {
+        checkIndexStatus();
+        setIngesting(false);
+        setIngestionMessage('');
+      }, source === 'web' ? 300000 : 60000); // 5 min for web, 1 min for PDF
+
+    } catch (error) {
+      setIngestionMessage(`Error: ${error.response?.data?.detail || error.message}`);
+      setIngesting(false);
+      setTimeout(() => setIngestionMessage(''), 5000);
+    }
+  };
+
   return (
     <div className="app">
       {/* Sidebar */}
