@@ -429,6 +429,12 @@ async def ingest_pdf_files(files: List[UploadFile] = File(...)):
         # Reinitialize RAG
         initialize_rag()
         
+        logger.info("PDF ingestion completed successfully", extra={
+            "files_processed": len(files),
+            "chunks_created": len(chunks),
+            "documents_loaded": len(documents)
+        })
+        
         return IngestionResponse(
             status="success",
             message=f"Successfully ingested {len(files)} PDF file(s)",
@@ -436,6 +442,10 @@ async def ingest_pdf_files(files: List[UploadFile] = File(...)):
         )
         
     except Exception as e:
+        logger.error("PDF ingestion failed", extra={
+            "error": str(e)[:200],
+            "file_count": len(files)
+        })
         return IngestionResponse(
             status="error",
             message=f"Error during ingestion: {str(e)}"
