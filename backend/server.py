@@ -13,6 +13,38 @@ import shutil
 # Add parent directory to path to access root-level modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Configure Structured JSON Logging
+def setup_logging():
+    """Configure structured JSON logging for the application"""
+    log_handler = logging.StreamHandler(sys.stdout)
+    
+    # Custom JSON formatter with all necessary fields
+    formatter = jsonlogger.JsonFormatter(
+        fmt='%(timestamp)s %(level)s %(name)s %(message)s %(module)s %(funcName)s %(lineno)d',
+        rename_fields={'levelname': 'level', 'asctime': 'timestamp'},
+        datefmt='%Y-%m-%dT%H:%M:%S'
+    )
+    
+    log_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers = []  # Clear existing handlers
+    root_logger.addHandler(log_handler)
+    
+    # Configure uvicorn loggers to use JSON format
+    for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error']:
+        logger = logging.getLogger(logger_name)
+        logger.handlers = []
+        logger.addHandler(log_handler)
+        logger.propagate = False
+    
+    return logging.getLogger(__name__)
+
+# Initialize logging
+logger = setup_logging()
+
 # Load environment variables
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
@@ -21,6 +53,12 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 API_KEY = os.getenv("GEMINI_API_KEY")
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "3"))
+
+logger.info("Starting GeneXus AI Assistant API", extra={
+    "api_key_configured": bool(API_KEY),
+    "chroma_db_path": CHROMA_DB_PATH,
+    "retrieval_k": RETRIEVAL_K
+})
 
 app = FastAPI(title="GeneXus AI Assistant API")
 
