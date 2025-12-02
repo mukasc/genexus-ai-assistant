@@ -185,12 +185,12 @@ async def startup_event():
     if result["success"]:
         logger.info("RAG system initialized successfully", extra={
             "rag_initialized": True,
-            "message": result.get("message")
+            "init_message": result.get("message")
         })
     else:
         logger.error("RAG system initialization failed", extra={
             "rag_initialized": False,
-            "error": result.get("error")
+            "init_error": result.get("error")
         })
 
 @app.get("/api/health", response_model=HealthResponse)
