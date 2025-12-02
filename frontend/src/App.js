@@ -186,7 +186,7 @@ function App() {
 
     setIngesting(true);
     setShowIngestionMenu(false);
-    setIngestionMessage(`Uploading and processing ${files.length} PDF file(s)...`);
+    setIngestionMessage(`Processando ${files.length} arquivo(s) PDF...`);
 
     try {
       const formData = new FormData();
@@ -201,20 +201,25 @@ function App() {
       });
 
       if (response.data.status === 'success') {
-        setIngestionMessage(`✅ ${response.data.message}. Created ${response.data.chunks_created} chunks.`);
+        showToast(
+          `${response.data.message}. ${response.data.chunks_created} fragmentos criados.`,
+          'success'
+        );
+        setIngestionMessage('');
         checkSystemHealth();
         checkIndexStatus();
       } else {
-        setIngestionMessage(`⚠️ ${response.data.message}`);
+        showToast(response.data.message, 'error');
+        setIngestionMessage('');
       }
       
       setIngesting(false);
-      setTimeout(() => setIngestionMessage(''), 10000);
 
     } catch (error) {
-      setIngestionMessage(`❌ Error: ${error.response?.data?.detail || error.message}`);
+      const errorMsg = error.response?.data?.detail || error.message || 'Erro ao processar arquivos';
+      showToast(errorMsg, 'error');
       setIngesting(false);
-      setTimeout(() => setIngestionMessage(''), 5000);
+      setIngestionMessage('');
     }
 
     // Reset file input
