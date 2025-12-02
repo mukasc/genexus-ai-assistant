@@ -314,14 +314,28 @@ async def chat(request: ChatRequest):
                 retry_after = 30  # Default to 30 seconds
             
             error_message = "Muitas requisições no momento. Aguarde alguns segundos e tente novamente."
+            
+            logger.warning("Rate limit error", extra={
+                "error_type": "rate_limit",
+                "retry_after": retry_after,
+                "error_detail": error_str[:200]
+            })
         
         # Check for other API errors
         elif "API" in error_str or "authentication" in error_str.lower():
             error_message = "Erro de autenticação com a API. Verifique suas credenciais."
+            logger.error("Authentication error", extra={
+                "error_type": "authentication",
+                "error_detail": error_str[:200]
+            })
         
         # Generic error
         else:
             error_message = "Erro ao processar a solicitação. Tente novamente."
+            logger.error("Chat processing error", extra={
+                "error_type": "generic",
+                "error_detail": error_str[:200]
+            })
         
         return ChatResponse(
             response="",
