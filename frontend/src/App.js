@@ -13,6 +13,9 @@ function App() {
   const [ingesting, setIngesting] = useState(false);
   const [ingestionMessage, setIngestionMessage] = useState('');
   const [showIngestionMenu, setShowIngestionMenu] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlInput, setUrlInput] = useState('');
+  const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
