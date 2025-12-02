@@ -454,10 +454,18 @@ async def ingest_pdf_files(files: List[UploadFile] = File(...)):
 @app.post("/api/ingest-url", response_model=IngestionResponse)
 async def ingest_from_url(url: str = Form(...)):
     """Ingest documentation from a specific URL"""
+    logger.info("URL ingestion request received", extra={
+        "url": url[:100] if url else None
+    })
+    
     if not API_KEY:
+        logger.error("URL ingestion failed: API key not configured")
         raise HTTPException(status_code=400, detail="API key not configured")
     
     if not url or not url.startswith('http'):
+        logger.warning("URL ingestion failed: Invalid URL", extra={
+            "url": url[:100] if url else None
+        })
         raise HTTPException(status_code=400, detail="Invalid URL provided")
     
     try:
