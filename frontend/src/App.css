@@ -581,9 +581,13 @@
 }
 
 .send-button:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
   transform: none;
+}
+
+.send-button:disabled:hover {
+  box-shadow: none;
 }
 
 /* Responsive */
