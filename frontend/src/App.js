@@ -10,6 +10,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [systemStatus, setSystemStatus] = useState(null);
   const [indexStatus, setIndexStatus] = useState(null);
+  const [ingesting, setIngesting] = useState(false);
+  const [ingestionMessage, setIngestionMessage] = useState('');
+  const [showIngestionMenu, setShowIngestionMenu] = useState(false);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
