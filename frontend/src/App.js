@@ -468,22 +468,33 @@ function App() {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask something about GeneXus..."
+              placeholder={isRateLimited ? `Aguarde ${retryTimer}s...` : "Pergunte algo sobre GeneXus..."}
               className="chat-input"
-              disabled={loading}
+              disabled={loading || isRateLimited}
               data-testid="chat-input"
             />
             <button 
               type="submit" 
               className="send-button" 
-              disabled={loading || !input.trim()}
+              disabled={loading || !input.trim() || isRateLimited}
               data-testid="send-button"
+              title={isRateLimited ? `Aguarde ${retryTimer} segundos` : 'Enviar mensagem'}
             >
-              {loading ? '⏳' : '🚀'}
+              {loading ? '⏳' : isRateLimited ? `⏱️ ${retryTimer}s` : '🚀'}
             </button>
           </form>
         </div>
       </div>
+
+      {/* Toast Notifications */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          duration={toast.duration}
+          onClose={closeToast}
+        />
+      )}
     </div>
   );
 }
