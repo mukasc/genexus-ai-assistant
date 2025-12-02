@@ -260,10 +260,16 @@ async def index_status():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Chat endpoint for RAG queries"""
+    logger.info("Chat request received", extra={
+        "message_length": len(request.message) if request.message else 0
+    })
+    
     if not request.message or not request.message.strip():
+        logger.warning("Empty message received")
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
     if not API_KEY:
+        logger.error("Chat request failed: API key not configured")
         return ChatResponse(
             response="",
             context_used=False,
@@ -271,6 +277,7 @@ async def chat(request: ChatRequest):
         )
     
     if not rag_chain:
+        logger.error("Chat request failed: RAG system not initialized")
         return ChatResponse(
             response="",
             context_used=False,
@@ -279,6 +286,11 @@ async def chat(request: ChatRequest):
     
     try:
         response = rag_chain.invoke(request.message)
+        
+        logger.info("Chat response generated successfully", extra={
+            "response_length": len(response),
+            "context_used": True
+        })
         
         return ChatResponse(
             response=response,
