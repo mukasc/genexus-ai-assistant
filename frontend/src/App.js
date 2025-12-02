@@ -100,29 +100,84 @@ function App() {
     setMessages([]);
   };
 
-  const startIngestion = async (source) => {
+  const handleFileUpload = async (event) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
     setIngesting(true);
     setShowIngestionMenu(false);
-    
-    const sourceName = source === 'pdf' ? 'PDF documents' : 'GeneXus website';
-    setIngestionMessage(`Starting ingestion from ${sourceName}...`);
+    setIngestionMessage(`Uploading and processing ${files.length} PDF file(s)...`);
 
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/ingest`, {
-        source: source
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+      }
+
+      const response = await axios.post(`${BACKEND_URL}/ingest-pdf`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
       });
 
-      setIngestionMessage(response.data.message + ' Check back in a few minutes.');
-      
-      // Refresh index status after a delay
-      setTimeout(() => {
+      if (response.data.status === 'success') {
+        setIngestionMessage(`✅ ${response.data.message}. Created ${response.data.chunks_created} chunks.`);
+        checkSystemHealth();
         checkIndexStatus();
-        setIngesting(false);
-        setIngestionMessage('');
-      }, source === 'web' ? 300000 : 60000); // 5 min for web, 1 min for PDF
+      } else {
+        setIngestionMessage(`⚠️ ${response.data.message}`);
+      }
+      
+      setIngesting(false);
+      setTimeout(() => setIngestionMessage(''), 10000);
 
     } catch (error) {
-      setIngestionMessage(`Error: ${error.response?.data?.detail || error.message}`);
+      setIngestionMessage(`❌ Error: ${error.response?.data?.detail || error.message}`);
+      setIngesting(false);
+      setTimeout(() => setIngestionMessage(''), 5000);
+    }
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleUrlIngestion = async () => {
+    if (!urlInput.trim()) {
+      setIngestionMessage('⚠️ Please enter a valid URL');
+      return;
+    }
+
+    setIngesting(true);
+    setShowUrlInput(false);
+    setShowIngestionMenu(false);
+    setIngestionMessage(`Processing URL: ${urlInput}...`);
+
+    try {
+      const formData = new FormData();
+      formData.append('url', urlInput);
+
+      const response = await axios.post(`${BACKEND_URL}/ingest-url`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      if (response.data.status === 'success') {
+        setIngestionMessage(`✅ ${response.data.message}. Created ${response.data.chunks_created} chunks.`);
+        checkSystemHealth();
+        checkIndexStatus();
+      } else {
+        setIngestionMessage(`⚠️ ${response.data.message}`);
+      }
+      
+      setIngesting(false);
+      setUrlInput('');
+      setTimeout(() => setIngestionMessage(''), 10000);
+
+    } catch (error) {
+      setIngestionMessage(`❌ Error: ${error.response?.data?.detail || error.message}`);
       setIngesting(false);
       setTimeout(() => setIngestionMessage(''), 5000);
     }
