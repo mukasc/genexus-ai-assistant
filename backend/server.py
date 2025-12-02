@@ -234,10 +234,35 @@ async def chat(request: ChatRequest):
         )
         
     except Exception as e:
+        error_str = str(e)
+        retry_after = None
+        error_message = None
+        
+        # Check for quota/rate limit errors (429)
+        if "429" in error_str or "quota" in error_str.lower() or "rate limit" in error_str.lower():
+            # Try to extract retry delay
+            import re
+            retry_match = re.search(r'retry in (\d+\.?\d*)', error_str, re.IGNORECASE)
+            if retry_match:
+                retry_after = int(float(retry_match.group(1)))
+            else:
+                retry_after = 30  # Default to 30 seconds
+            
+            error_message = "Muitas requisições no momento. Aguarde alguns segundos e tente novamente."
+        
+        # Check for other API errors
+        elif "API" in error_str or "authentication" in error_str.lower():
+            error_message = "Erro de autenticação com a API. Verifique suas credenciais."
+        
+        # Generic error
+        else:
+            error_message = "Erro ao processar a solicitação. Tente novamente."
+        
         return ChatResponse(
             response="",
             context_used=False,
-            error=f"Error generating response: {str(e)}"
+            error=error_message,
+            retry_after=retry_after
         )
 
 @app.post("/api/ingest-pdf", response_model=IngestionResponse)
