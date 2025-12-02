@@ -239,51 +239,165 @@ async def chat(request: ChatRequest):
             error=f"Error generating response: {str(e)}"
         )
 
-@app.post("/api/ingest", response_model=IngestionResponse)
-async def ingest_documents(request: IngestionRequest):
-    """Trigger document ingestion"""
-    import subprocess
-    import threading
+@app.post("/api/ingest-pdf", response_model=IngestionResponse)
+async def ingest_pdf_files(files: List[UploadFile] = File(...)):
+    """Ingest uploaded PDF files"""
+    if not API_KEY:
+        raise HTTPException(status_code=400, detail="API key not configured")
     
-    if request.source not in ["pdf", "web"]:
-        raise HTTPException(status_code=400, detail="Source must be 'pdf' or 'web'")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
     
-    script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                               f"ingest{'_site' if request.source == 'web' else ''}.py")
-    
-    if not os.path.exists(script_path):
-        raise HTTPException(status_code=500, detail=f"Ingestion script not found: {script_path}")
-    
-    def run_ingestion():
-        """Run ingestion in background"""
-        try:
-            result = subprocess.run(
-                [sys.executable, script_path],
-                capture_output=True,
-                text=True,
-                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                timeout=600  # 10 minute timeout
-            )
-            print(f"Ingestion completed: {result.returncode}")
-            print(f"Output: {result.stdout}")
-            if result.stderr:
-                print(f"Errors: {result.stderr}")
+    try:
+        from langchain_community.document_loaders import PyPDFLoader
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        from langchain_community.vectorstores import Chroma
+        
+        documents = []
+        temp_files = []
+        
+        # Save uploaded files temporarily
+        for file in files:
+            if not file.filename.endswith('.pdf'):
+                continue
+                
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+            temp_files.append(temp_file.name)
             
-            # Reinitialize RAG after ingestion
-            initialize_rag()
-        except Exception as e:
-            print(f"Ingestion error: {e}")
+            with open(temp_file.name, 'wb') as f:
+                content = await file.read()
+                f.write(content)
+            
+            # Load PDF
+            loader = PyPDFLoader(temp_file.name)
+            documents.extend(loader.load())
+        
+        if not documents:
+            return IngestionResponse(
+                status="error",
+                message="No valid PDF documents found in uploaded files"
+            )
+        
+        # Split into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200"))
+        )
+        chunks = text_splitter.split_documents(documents)
+        
+        # Create embeddings
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/text-embedding-004",
+            google_api_key=API_KEY
+        )
+        
+        # Add to vector store
+        chroma_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
+        
+        try:
+            vectorstore = Chroma(
+                persist_directory=chroma_path,
+                embedding_function=embeddings
+            )
+            vectorstore.add_documents(chunks)
+        except:
+            vectorstore = Chroma.from_documents(
+                documents=chunks,
+                embedding=embeddings,
+                persist_directory=chroma_path
+            )
+        
+        # Clean up temp files
+        for temp_file in temp_files:
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+        
+        # Reinitialize RAG
+        initialize_rag()
+        
+        return IngestionResponse(
+            status="success",
+            message=f"Successfully ingested {len(files)} PDF file(s)",
+            chunks_created=len(chunks)
+        )
+        
+    except Exception as e:
+        return IngestionResponse(
+            status="error",
+            message=f"Error during ingestion: {str(e)}"
+        )
+
+@app.post("/api/ingest-url", response_model=IngestionResponse)
+async def ingest_from_url(url: str = Form(...)):
+    """Ingest documentation from a specific URL"""
+    if not API_KEY:
+        raise HTTPException(status_code=400, detail="API key not configured")
     
-    # Start ingestion in background thread
-    thread = threading.Thread(target=run_ingestion, daemon=True)
-    thread.start()
+    if not url or not url.startswith('http'):
+        raise HTTPException(status_code=400, detail="Invalid URL provided")
     
-    source_name = "PDF documents" if request.source == "pdf" else "GeneXus website"
-    return IngestionResponse(
-        status="started",
-        message=f"Ingestion from {source_name} started in background",
-        progress="Processing documents... This may take several minutes."
-    )
+    try:
+        from langchain_community.document_loaders import WebBaseLoader
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        from langchain_community.vectorstores import Chroma
+        
+        # Load web content
+        loader = WebBaseLoader(url)
+        documents = loader.load()
+        
+        if not documents:
+            return IngestionResponse(
+                status="error",
+                message="No content could be extracted from the URL"
+            )
+        
+        # Split into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200"))
+        )
+        chunks = text_splitter.split_documents(documents)
+        
+        # Create embeddings
+        embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/text-embedding-004",
+            google_api_key=API_KEY
+        )
+        
+        # Add to vector store
+        chroma_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
+        
+        try:
+            vectorstore = Chroma(
+                persist_directory=chroma_path,
+                embedding_function=embeddings
+            )
+            vectorstore.add_documents(chunks)
+        except:
+            vectorstore = Chroma.from_documents(
+                documents=chunks,
+                embedding=embeddings,
+                persist_directory=chroma_path
+            )
+        
+        # Reinitialize RAG
+        initialize_rag()
+        
+        return IngestionResponse(
+            status="success",
+            message=f"Successfully ingested content from URL",
+            chunks_created=len(chunks)
+        )
+        
+    except Exception as e:
+        return IngestionResponse(
+            status="error",
+            message=f"Error during ingestion: {str(e)}"
+        )
 
 @app.get("/api/")
 async def root():
