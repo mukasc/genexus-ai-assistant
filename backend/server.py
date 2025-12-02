@@ -516,6 +516,12 @@ async def ingest_from_url(url: str = Form(...)):
         # Reinitialize RAG
         initialize_rag()
         
+        logger.info("URL ingestion completed successfully", extra={
+            "url": url[:100],
+            "chunks_created": len(chunks),
+            "documents_loaded": len(documents)
+        })
+        
         return IngestionResponse(
             status="success",
             message=f"Successfully ingested content from URL",
@@ -523,6 +529,10 @@ async def ingest_from_url(url: str = Form(...)):
         )
         
     except Exception as e:
+        logger.error("URL ingestion failed", extra={
+            "error": str(e)[:200],
+            "url": url[:100]
+        })
         return IngestionResponse(
             status="error",
             message=f"Error during ingestion: {str(e)}"
