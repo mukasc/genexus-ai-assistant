@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import Toast from './Toast';
 import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
@@ -15,8 +16,12 @@ function App() {
   const [showIngestionMenu, setShowIngestionMenu] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [urlInput, setUrlInput] = useState('');
+  const [toast, setToast] = useState(null);
+  const [isRateLimited, setIsRateLimited] = useState(false);
+  const [retryTimer, setRetryTimer] = useState(0);
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const retryTimerRef = useRef(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
