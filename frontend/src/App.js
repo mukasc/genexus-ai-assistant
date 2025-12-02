@@ -246,27 +246,69 @@ function App() {
             {showIngestionMenu && !ingesting && (
               <div className="ingestion-menu">
                 <button 
-                  onClick={() => startIngestion('pdf')}
+                  onClick={() => fileInputRef.current?.click()}
                   className="ingestion-option"
                   data-testid="ingest-pdf-button"
                 >
-                  📄 From PDF Files
-                  <span className="option-desc">Index PDFs from docs/ folder</span>
+                  📄 Upload PDF Files
+                  <span className="option-desc">Select one or more PDF files</span>
                 </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={handleFileUpload}
+                />
                 <button 
-                  onClick={() => startIngestion('web')}
+                  onClick={() => {
+                    setShowUrlInput(true);
+                    setShowIngestionMenu(false);
+                  }}
                   className="ingestion-option"
-                  data-testid="ingest-web-button"
+                  data-testid="ingest-url-button"
                 >
-                  🌐 From GeneXus Website
-                  <span className="option-desc">Scrape official documentation</span>
+                  🌐 From URL
+                  <span className="option-desc">Enter a documentation URL</span>
                 </button>
+              </div>
+            )}
+            
+            {showUrlInput && !ingesting && (
+              <div className="url-input-container">
+                <input
+                  type="text"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="https://docs.genexus.com/..."
+                  className="url-input"
+                  data-testid="url-input"
+                />
+                <div className="url-buttons">
+                  <button 
+                    onClick={handleUrlIngestion}
+                    className="url-button url-button-submit"
+                    disabled={!urlInput.trim()}
+                  >
+                    ✅ Ingest
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setShowUrlInput(false);
+                      setUrlInput('');
+                    }}
+                    className="url-button url-button-cancel"
+                  >
+                    ❌ Cancel
+                  </button>
+                </div>
               </div>
             )}
             
             {ingestionMessage && (
               <div className={`ingestion-status ${ingesting ? 'ingesting' : ''}`}>
-                {ingesting ? '⏳' : '✅'} {ingestionMessage}
+                {ingestionMessage}
               </div>
             )}
           </div>
