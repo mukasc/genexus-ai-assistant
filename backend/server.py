@@ -239,6 +239,52 @@ async def chat(request: ChatRequest):
             error=f"Error generating response: {str(e)}"
         )
 
+@app.post("/api/ingest", response_model=IngestionResponse)
+async def ingest_documents(request: IngestionRequest):
+    """Trigger document ingestion"""
+    import subprocess
+    import threading
+    
+    if request.source not in ["pdf", "web"]:
+        raise HTTPException(status_code=400, detail="Source must be 'pdf' or 'web'")
+    
+    script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+                               f"ingest{'_site' if request.source == 'web' else ''}.py")
+    
+    if not os.path.exists(script_path):
+        raise HTTPException(status_code=500, detail=f"Ingestion script not found: {script_path}")
+    
+    def run_ingestion():
+        """Run ingestion in background"""
+        try:
+            result = subprocess.run(
+                [sys.executable, script_path],
+                capture_output=True,
+                text=True,
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                timeout=600  # 10 minute timeout
+            )
+            print(f"Ingestion completed: {result.returncode}")
+            print(f"Output: {result.stdout}")
+            if result.stderr:
+                print(f"Errors: {result.stderr}")
+            
+            # Reinitialize RAG after ingestion
+            initialize_rag()
+        except Exception as e:
+            print(f"Ingestion error: {e}")
+    
+    # Start ingestion in background thread
+    thread = threading.Thread(target=run_ingestion, daemon=True)
+    thread.start()
+    
+    source_name = "PDF documents" if request.source == "pdf" else "GeneXus website"
+    return IngestionResponse(
+        status="started",
+        message=f"Ingestion from {source_name} started in background",
+        progress="Processing documents... This may take several minutes."
+    )
+
 @app.get("/api/")
 async def root():
     """Root endpoint"""
@@ -248,7 +294,8 @@ async def root():
         "endpoints": {
             "health": "/api/health",
             "chat": "/api/chat",
-            "index_status": "/api/index-status"
+            "index_status": "/api/index-status",
+            "ingest": "/api/ingest"
         }
     }
 
