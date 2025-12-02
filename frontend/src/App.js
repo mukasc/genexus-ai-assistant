@@ -230,14 +230,14 @@ function App() {
 
   const handleUrlIngestion = async () => {
     if (!urlInput.trim()) {
-      setIngestionMessage('⚠️ Please enter a valid URL');
+      showToast('Por favor, insira uma URL válida', 'warning');
       return;
     }
 
     setIngesting(true);
     setShowUrlInput(false);
     setShowIngestionMenu(false);
-    setIngestionMessage(`Processing URL: ${urlInput}...`);
+    setIngestionMessage(`Processando URL: ${urlInput}...`);
 
     try {
       const formData = new FormData();
@@ -250,21 +250,26 @@ function App() {
       });
 
       if (response.data.status === 'success') {
-        setIngestionMessage(`✅ ${response.data.message}. Created ${response.data.chunks_created} chunks.`);
+        showToast(
+          `${response.data.message}. ${response.data.chunks_created} fragmentos criados.`,
+          'success'
+        );
+        setIngestionMessage('');
         checkSystemHealth();
         checkIndexStatus();
       } else {
-        setIngestionMessage(`⚠️ ${response.data.message}`);
+        showToast(response.data.message, 'error');
+        setIngestionMessage('');
       }
       
       setIngesting(false);
       setUrlInput('');
-      setTimeout(() => setIngestionMessage(''), 10000);
 
     } catch (error) {
-      setIngestionMessage(`❌ Error: ${error.response?.data?.detail || error.message}`);
+      const errorMsg = error.response?.data?.detail || error.message || 'Erro ao processar URL';
+      showToast(errorMsg, 'error');
       setIngesting(false);
-      setTimeout(() => setIngestionMessage(''), 5000);
+      setIngestionMessage('');
     }
   };
 
