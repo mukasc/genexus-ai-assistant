@@ -36,6 +36,43 @@ function App() {
     checkIndexStatus();
   }, []);
 
+  useEffect(() => {
+    // Cleanup retry timer on unmount
+    return () => {
+      if (retryTimerRef.current) {
+        clearInterval(retryTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showToast = (message, type = 'info', duration = 5000) => {
+    setToast({ message, type, duration });
+  };
+
+  const closeToast = () => {
+    setToast(null);
+  };
+
+  const startRetryTimer = (seconds) => {
+    setIsRateLimited(true);
+    setRetryTimer(seconds);
+
+    if (retryTimerRef.current) {
+      clearInterval(retryTimerRef.current);
+    }
+
+    retryTimerRef.current = setInterval(() => {
+      setRetryTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(retryTimerRef.current);
+          setIsRateLimited(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
   const checkSystemHealth = async () => {
     try {
       const response = await axios.get(`${BACKEND_URL}/api/health`);
