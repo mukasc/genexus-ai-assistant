@@ -100,7 +100,7 @@ function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || isRateLimited) return;
 
     const userMessage = {
       role: 'user',
@@ -109,30 +109,68 @@ function App() {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const userInput = input;
     setInput('');
     setLoading(true);
 
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/chat`, {
-        message: input
+      const response = await axios.post(`${BACKEND_URL}/chat`, {
+        message: userInput
       });
 
-      const assistantMessage = {
-        role: 'assistant',
-        content: response.data.response || response.data.error,
-        error: response.data.error ? true : false,
-        timestamp: new Date().toISOString()
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
+      // Check for rate limit error
+      if (response.data.error && response.data.retry_after) {
+        showToast(response.data.error, 'warning', 0);
+        startRetryTimer(response.data.retry_after);
+        
+        // Remove the user message since we couldn't process it
+        setMessages(prev => prev.slice(0, -1));
+        // Restore the input
+        setInput(userInput);
+      } else if (response.data.error) {
+        // Other errors
+        showToast(response.data.error, 'error');
+        
+        const errorMessage = {
+          role: 'assistant',
+          content: response.data.error,
+          error: true,
+          timestamp: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      } else {
+        // Success
+        const assistantMessage = {
+          role: 'assistant',
+          content: response.data.response,
+          error: false,
+          timestamp: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+      }
     } catch (error) {
-      const errorMessage = {
-        role: 'assistant',
-        content: `Error: ${error.response?.data?.detail || error.message || 'Failed to get response'}`,
-        error: true,
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      // Network or other errors
+      let errorMsg = 'Erro de conexão. Verifique sua internet e tente novamente.';
+      
+      if (error.response?.status === 429) {
+        errorMsg = 'Muitas requisições no momento. Aguarde alguns segundos e tente novamente.';
+        showToast(errorMsg, 'warning', 0);
+        startRetryTimer(30);
+        
+        // Remove the user message and restore input
+        setMessages(prev => prev.slice(0, -1));
+        setInput(userInput);
+      } else {
+        showToast(errorMsg, 'error');
+        
+        const errorMessage = {
+          role: 'assistant',
+          content: errorMsg,
+          error: true,
+          timestamp: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, errorMessage]);
+      }
     } finally {
       setLoading(false);
     }
