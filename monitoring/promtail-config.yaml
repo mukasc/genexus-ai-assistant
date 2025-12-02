@@ -1,0 +1,95 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Backend logs
+  - job_name: backend
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: backend
+          service: genexus-ai-backend
+          __path__: /var/log/supervisor/backend.*.log
+    pipeline_stages:
+      # Parse JSON logs
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            logger: name
+            message: message
+            module: module
+            function: funcName
+      # Extract timestamp
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+      # Add labels from log fields
+      - labels:
+          level:
+          logger:
+          module:
+      # Format output
+      - output:
+          source: message
+
+  # Frontend logs
+  - job_name: frontend
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: frontend
+          service: genexus-ai-frontend
+          __path__: /var/log/supervisor/frontend.*.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<timestamp>\S+\s+\S+)\s+(?P<level>\w+)\s+(?P<message>.*)$'
+      - labels:
+          level:
+      - output:
+          source: message
+
+  # MongoDB logs
+  - job_name: mongodb
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: mongodb
+          service: mongodb
+          __path__: /var/log/mongodb.*.log
+    pipeline_stages:
+      - regex:
+          expression: '^(?P<timestamp>\S+)\s+(?P<level>\w+)\s+(?P<component>\w+)\s+(?P<message>.*)$'
+      - labels:
+          level:
+          component:
+      - output:
+          source: message
+
+  # All supervisor logs (fallback)
+  - job_name: supervisor
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: supervisor
+          service: all-services
+          __path__: /var/log/supervisor/*.log
+    pipeline_stages:
+      - match:
+          selector: '{job="supervisor"}'
+          stages:
+            - regex:
+                expression: '^(?P<timestamp>\S+\s+\S+)?\s*(?P<message>.*)$'
+            - output:
+                source: message
