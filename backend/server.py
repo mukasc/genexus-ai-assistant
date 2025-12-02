@@ -347,10 +347,16 @@ async def chat(request: ChatRequest):
 @app.post("/api/ingest-pdf", response_model=IngestionResponse)
 async def ingest_pdf_files(files: List[UploadFile] = File(...)):
     """Ingest uploaded PDF files"""
+    logger.info("PDF ingestion request received", extra={
+        "file_count": len(files) if files else 0
+    })
+    
     if not API_KEY:
+        logger.error("PDF ingestion failed: API key not configured")
         raise HTTPException(status_code=400, detail="API key not configured")
     
     if not files:
+        logger.warning("PDF ingestion failed: No files provided")
         raise HTTPException(status_code=400, detail="No files provided")
     
     try:
