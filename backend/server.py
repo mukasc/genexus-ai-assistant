@@ -180,11 +180,18 @@ USER QUESTION: {question}
 # Initialize on startup
 @app.on_event("startup")
 async def startup_event():
+    logger.info("Application startup initiated")
     result = initialize_rag()
     if result["success"]:
-        print("✅ RAG system initialized successfully")
+        logger.info("RAG system initialized successfully", extra={
+            "rag_initialized": True,
+            "message": result.get("message")
+        })
     else:
-        print(f"⚠️ RAG system initialization failed: {result.get('error')}")
+        logger.error("RAG system initialization failed", extra={
+            "rag_initialized": False,
+            "error": result.get("error")
+        })
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
