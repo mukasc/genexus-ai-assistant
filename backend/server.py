@@ -43,6 +43,7 @@ class ChatResponse(BaseModel):
     response: str
     context_used: bool
     error: Optional[str] = None
+    retry_after: Optional[int] = None  # Seconds to wait before retry
 
 class HealthResponse(BaseModel):
     status: str
