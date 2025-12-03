@@ -57,6 +57,12 @@ API_KEY = os.getenv("GEMINI_API_KEY")
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "3"))
 
+# Rate limiting configuration
+MAX_CHUNKS = int(os.getenv("MAX_CHUNKS_PER_INGESTION", "50"))
+BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
+DELAY_SECONDS = float(os.getenv("EMBEDDING_DELAY_SECONDS", "5"))
+USE_CACHE = os.getenv("USE_EMBEDDINGS_CACHE", "true").lower() == "true"
+
 logger.info("Starting GeneXus AI Assistant API", extra={
     "api_key_configured": bool(API_KEY),
     "chroma_db_path": CHROMA_DB_PATH,
