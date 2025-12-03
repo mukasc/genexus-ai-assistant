@@ -34,3 +34,6 @@ pydantic>=2.0.0
 
 # Structured Logging
 python-json-logger>=2.0.7
+
+# Rate Limiting and Retry
+tenacity>=8.2.3
