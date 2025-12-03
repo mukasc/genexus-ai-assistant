@@ -33,7 +33,9 @@ const LogsViewer = ({ onClose }) => {
         params.append('search', searchTerm);
       }
 
-      const response = await axios.get(`${BACKEND_URL.replace('/api', '')}/api/logs?${params}`);
+      // Add /api if not already present
+      const baseUrl = BACKEND_URL.includes('/api') ? BACKEND_URL : `${BACKEND_URL}/api`;
+      const response = await axios.get(`${baseUrl}/logs?${params}`);
       
       if (response.data.error) {
         setError(response.data.error);
