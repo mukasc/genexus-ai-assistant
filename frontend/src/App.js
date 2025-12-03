@@ -507,6 +507,11 @@ function App() {
           onClose={closeToast}
         />
       )}
+
+      {/* Logs Viewer */}
+      {showLogs && (
+        <LogsViewer onClose={() => setShowLogs(false)} />
+      )}
     </div>
   );
 }
