@@ -405,6 +405,16 @@ function App() {
             )}
           </div>
 
+          <div className="actions-section">
+            <button 
+              onClick={() => setShowLogs(true)}
+              className="action-button logs-button"
+              data-testid="view-logs-button"
+            >
+              📊 Ver Logs
+            </button>
+          </div>
+
           {messages.length > 0 && (
             <button onClick={clearChat} className="clear-button">
               🗑️ Clear Chat
