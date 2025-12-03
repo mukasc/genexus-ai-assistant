@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import Toast from './Toast';
+import LogsViewer from './LogsViewer';
 import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
@@ -19,6 +20,7 @@ function App() {
   const [toast, setToast] = useState(null);
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [retryTimer, setRetryTimer] = useState(0);
+  const [showLogs, setShowLogs] = useState(false);
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const retryTimerRef = useRef(null);
