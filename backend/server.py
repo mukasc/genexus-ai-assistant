@@ -538,6 +538,53 @@ async def ingest_from_url(url: str = Form(...)):
             message=f"Error during ingestion: {str(e)}"
         )
 
+@app.get("/api/logs")
+async def get_logs(lines: int = 100, level: Optional[str] = None, search: Optional[str] = None):
+    """Get application logs"""
+    import subprocess
+    
+    try:
+        log_file = "/var/log/supervisor/backend.out.log"
+        
+        # Read last N lines
+        result = subprocess.run(
+            ["tail", f"-{lines}", log_file],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode != 0:
+            return {"logs": [], "error": "Could not read log file"}
+        
+        # Parse JSON logs
+        logs = []
+        for line in result.stdout.strip().split('\n'):
+            if not line.strip():
+                continue
+            try:
+                import json
+                log_entry = json.loads(line)
+                
+                # Filter by level if specified
+                if level and log_entry.get('level') != level:
+                    continue
+                
+                # Filter by search term if specified
+                if search and search.lower() not in str(log_entry).lower():
+                    continue
+                
+                logs.append(log_entry)
+            except json.JSONDecodeError:
+                # If not JSON, add as plain text
+                logs.append({"message": line, "level": "info", "name": "unknown"})
+        
+        return {"logs": logs, "total": len(logs)}
+        
+    except Exception as e:
+        logger.error(f"Error fetching logs: {str(e)}")
+        return {"logs": [], "error": str(e)}
+
 @app.get("/api/")
 async def root():
     """Root endpoint"""
@@ -549,7 +596,8 @@ async def root():
             "chat": "/api/chat",
             "index_status": "/api/index-status",
             "ingest_pdf": "/api/ingest-pdf",
-            "ingest_url": "/api/ingest-url"
+            "ingest_url": "/api/ingest-url",
+            "logs": "/api/logs"
         }
     }
 
