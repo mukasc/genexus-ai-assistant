@@ -110,6 +110,24 @@ class IngestionResponse(BaseModel):
     message: str
     progress: Optional[str] = None
     chunks_created: Optional[int] = None
+    cache_hits: Optional[int] = None
+    api_calls: Optional[int] = None
+
+def create_optimized_embeddings():
+    """Create embeddings instance with rate limiting"""
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+    
+    base_embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=API_KEY
+    )
+    
+    return OptimizedEmbeddings(
+        base_embeddings,
+        use_cache=USE_CACHE,
+        batch_size=BATCH_SIZE,
+        delay_between_batches=DELAY_SECONDS
+    )
 
 # Initialize RAG system
 def initialize_rag():
