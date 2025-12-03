@@ -13,6 +13,9 @@ import shutil
 # Add parent directory to path to access root-level modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Import rate limiting optimizer
+from gemini_optimizer import OptimizedEmbeddings, get_embedding_stats
+
 # Configure Structured JSON Logging
 def setup_logging():
     """Configure structured JSON logging for the application"""
