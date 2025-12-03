@@ -33,7 +33,7 @@ const LogsViewer = ({ onClose }) => {
         params.append('search', searchTerm);
       }
 
-      const response = await axios.get(`${BACKEND_URL}/logs?${params}`);
+      const response = await axios.get(`${BACKEND_URL.replace('/api', '')}/api/logs?${params}`);
       
       if (response.data.error) {
         setError(response.data.error);
