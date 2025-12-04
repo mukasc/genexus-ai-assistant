@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
 import Toast from './Toast';
 import LogsViewer from './LogsViewer';
 import './App.css';
@@ -120,19 +121,13 @@ function App() {
         message: userInput
       });
 
-      // Check for rate limit error
       if (response.data.error && response.data.retry_after) {
         showToast(response.data.error, 'warning', 0);
         startRetryTimer(response.data.retry_after);
-        
-        // Remove the user message since we couldn't process it
         setMessages(prev => prev.slice(0, -1));
-        // Restore the input
         setInput(userInput);
       } else if (response.data.error) {
-        // Other errors
         showToast(response.data.error, 'error');
-        
         const errorMessage = {
           role: 'assistant',
           content: response.data.error,
@@ -141,7 +136,6 @@ function App() {
         };
         setMessages(prev => [...prev, errorMessage]);
       } else {
-        // Success
         const assistantMessage = {
           role: 'assistant',
           content: response.data.response,
@@ -151,20 +145,16 @@ function App() {
         setMessages(prev => [...prev, assistantMessage]);
       }
     } catch (error) {
-      // Network or other errors
       let errorMsg = 'Erro de conexão. Verifique sua internet e tente novamente.';
       
       if (error.response?.status === 429) {
         errorMsg = 'Muitas requisições no momento. Aguarde alguns segundos e tente novamente.';
         showToast(errorMsg, 'warning', 0);
         startRetryTimer(30);
-        
-        // Remove the user message and restore input
         setMessages(prev => prev.slice(0, -1));
         setInput(userInput);
       } else {
         showToast(errorMsg, 'error');
-        
         const errorMessage = {
           role: 'assistant',
           content: errorMsg,
@@ -224,7 +214,6 @@ function App() {
       setIngestionMessage('');
     }
 
-    // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -277,7 +266,6 @@ function App() {
 
   return (
     <div className="app">
-      {/* Sidebar */}
       <div className="sidebar">
         <div className="sidebar-header">
           <h2>🤖 GeneXus AI</h2>
@@ -423,7 +411,6 @@ function App() {
         </div>
       </div>
 
-      {/* Main Chat Area */}
       <div className="main-content">
         <div className="chat-header">
           <h1>🤖 GeneXus AI Assistant</h1>
@@ -450,7 +437,24 @@ function App() {
                   {msg.role === 'user' ? '👤' : msg.error ? '❌' : '🤖'}
                 </div>
                 <div className="message-content">
-                  <div className="message-text">{msg.content}</div>
+                  <div className="message-text">
+                    <ReactMarkdown
+                      components={{
+                        a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                        code: ({node, inline, className, children, ...props}) => {
+                          return inline ? (
+                            <code className="inline-code" {...props}>{children}</code>
+                          ) : (
+                            <div className="code-block-wrapper">
+                              <code className="block-code" {...props}>{children}</code>
+                            </div>
+                          )
+                        }
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
                   <div className="message-time">
                     {new Date(msg.timestamp).toLocaleTimeString()}
                   </div>
@@ -498,7 +502,6 @@ function App() {
         </div>
       </div>
 
-      {/* Toast Notifications */}
       {toast && (
         <Toast
           message={toast.message}
@@ -508,7 +511,6 @@ function App() {
         />
       )}
 
-      {/* Logs Viewer */}
       {showLogs && (
         <LogsViewer onClose={() => setShowLogs(false)} />
       )}
