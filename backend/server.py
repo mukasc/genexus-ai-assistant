@@ -134,7 +134,6 @@ def initialize_rag_system():
         retriever = vectorstore_instance.as_retriever(search_kwargs={"k": RETRIEVAL_K})
         
         # 2. Setup LLM
-        # ATUALIZAÇÃO: Usando modelo confirmado na sua lista
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash", 
             temperature=0.1,
@@ -239,7 +238,6 @@ async def ping_ai():
         raise HTTPException(status_code=500, detail="API Key not configured")
     
     try:
-        # ATUALIZAÇÃO: Usando modelo confirmado
         test_llm = ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
             google_api_key=API_KEY,
@@ -311,28 +309,36 @@ async def chat(request: ChatRequest):
             retry_after=60
         )
 
+# --- CORREÇÃO AQUI: Debug e File Handling ---
 @app.post("/api/ingest-pdf", response_model=IngestionResponse)
 async def ingest_pdf_files(files: List[UploadFile] = File(...)):
+    # 1. Log de Entrada (Para confirmar que a rota foi encontrada)
+    logger.info(f"Recebida solicitação de ingestão para {len(files)} arquivos.")
+    
     if not API_KEY:
         raise HTTPException(status_code=400, detail="API key not configured")
     
-    temp_files = []
+    temp_files_paths = []
     try:
         documents = []
         for file in files:
-            if not file.filename.endswith('.pdf'): continue
+            if not file.filename.endswith('.pdf'): 
+                logger.warning(f"Arquivo ignorado (não é PDF): {file.filename}")
+                continue
             
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-            temp_files.append(temp_file.name)
-            with open(temp_file.name, 'wb') as f:
-                content = await file.read()
-                f.write(content)
+            # 2. Correção de TempFile (Compatível com Windows)
+            # Criamos o arquivo, escrevemos e FECHAMOS antes de passar para o Loader
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                shutil.copyfileobj(file.file, tmp)
+                temp_path = tmp.name
+                temp_files_paths.append(temp_path)
             
-            loader = PyPDFLoader(temp_file.name)
+            # Agora que o arquivo está fechado, o PyPDFLoader pode abri-lo seguramente
+            loader = PyPDFLoader(temp_path)
             documents.extend(loader.load())
 
         if not documents:
-            return IngestionResponse(status="error", message="No valid PDF documents found")
+            return IngestionResponse(status="error", message="Nenhum documento PDF válido encontrado")
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
@@ -340,6 +346,7 @@ async def ingest_pdf_files(files: List[UploadFile] = File(...)):
         )
         chunks = text_splitter.split_documents(documents)
 
+        # Ingestão usando Helper Otimizado
         vs = get_vectorstore()
         vs.add_documents(chunks) 
         
@@ -348,11 +355,19 @@ async def ingest_pdf_files(files: List[UploadFile] = File(...)):
         return IngestionResponse(status="success", message=f"Ingested {len(files)} files", chunks_created=len(chunks))
 
     except Exception as e:
-        logger.error(f"PDF ingestion error: {e}")
+        logger.error(f"PDF ingestion error: {e}", exc_info=True)
+        # Retorna 500 para erro real de servidor, ou o JSON de erro se preferir
+        # Aqui mantive seu padrão de retornar JSON com status error, mas logando o erro real
         return IngestionResponse(status="error", message=str(e))
+        
     finally:
-        for tf in temp_files:
-            if os.path.exists(tf): os.remove(tf)
+        # Limpeza
+        for path in temp_files_paths:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                logger.warning(f"Erro ao limpar arquivo temporário {path}: {e}")
 
 @app.post("/api/ingest-url", response_model=IngestionResponse)
 async def ingest_from_url(url: str = Form(...)):
@@ -422,7 +437,7 @@ async def get_logs(lines: int = 100, level: Optional[str] = None, search: Option
 async def root():
     return {
         "message": "GeneXus AI Assistant API",
-        "version": "2.7.0 (Stable Gemini 2.0)",
+        "version": "2.8.0 (Fix PDF + Logs)",
         "endpoints": {
             "health": "/api/health",
             "chat": "/api/chat",

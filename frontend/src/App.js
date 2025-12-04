@@ -196,7 +196,7 @@ function App() {
         formData.append('files', files[i]);
       }
 
-      const response = await axios.post(`${BACKEND_URL}/ingest-pdf`, formData, {
+      const response = await axios.post(`${BACKEND_URL}/api/ingest-pdf`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -245,7 +245,7 @@ function App() {
       const formData = new FormData();
       formData.append('url', urlInput);
 
-      const response = await axios.post(`${BACKEND_URL}/ingest-url`, formData, {
+      const response = await axios.post(`${BACKEND_URL}/api/ingest-url`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
