@@ -1,14 +1,29 @@
 import os
 import sys
 import logging
+import shutil
+import tempfile
+import json
+import time
+from contextlib import asynccontextmanager
+from typing import List, Optional
+
+# Third-party imports
 from pythonjsonlogger import jsonlogger
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import List, Optional
-import tempfile
-import shutil
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+# LangChain Imports
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Add parent directory to path to access root-level modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -16,43 +31,37 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import rate limiting optimizer
 from gemini_optimizer import OptimizedEmbeddings, get_embedding_stats
 
-# Configure Structured JSON Logging
+# --- CONFIGURAÇÃO DE AMBIENTE E LOGS ---
+load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
+
+LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "backend.out.log")
+
 def setup_logging():
     """Configure structured JSON logging for the application"""
     log_handler = logging.StreamHandler(sys.stdout)
-    
-    # Custom JSON formatter with all necessary fields
     formatter = jsonlogger.JsonFormatter(
         fmt='%(timestamp)s %(level)s %(name)s %(message)s %(module)s %(funcName)s %(lineno)d',
         rename_fields={'levelname': 'level', 'asctime': 'timestamp'},
         datefmt='%Y-%m-%dT%H:%M:%S'
     )
-    
     log_handler.setFormatter(formatter)
     
-    # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    root_logger.handlers = []  # Clear existing handlers
-    root_logger.addHandler(log_handler)
+    root_logger.handlers = [log_handler]
     
-    # Configure uvicorn loggers to use JSON format
+    # Configure uvicorn loggers
     for logger_name in ['uvicorn', 'uvicorn.access', 'uvicorn.error']:
-        logger = logging.getLogger(logger_name)
-        logger.handlers = []
-        logger.addHandler(log_handler)
-        logger.propagate = False
+        l = logging.getLogger(logger_name)
+        l.handlers = [log_handler]
+        l.propagate = False
     
     return logging.getLogger(__name__)
 
-# Initialize logging
 logger = setup_logging()
 
-# Load environment variables
-load_dotenv()
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
-
-# Configuration
+# --- VARIÁVEIS GLOBAIS E CONFIG ---
 API_KEY = os.getenv("GEMINI_API_KEY")
 CHROMA_DB_PATH = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "3"))
@@ -63,15 +72,130 @@ BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
 DELAY_SECONDS = float(os.getenv("EMBEDDING_DELAY_SECONDS", "5"))
 USE_CACHE = os.getenv("USE_EMBEDDINGS_CACHE", "true").lower() == "true"
 
-logger.info("Starting GeneXus AI Assistant API", extra={
-    "api_key_configured": bool(API_KEY),
-    "chroma_db_path": CHROMA_DB_PATH,
-    "retrieval_k": RETRIEVAL_K
-})
+# Estado Global
+rag_chain = None
+vectorstore_instance = None 
 
-app = FastAPI(title="GeneXus AI Assistant API")
+# --- HELPERS (CLEAN CODE) ---
 
-# CORS configuration
+def resolve_log_file_path() -> Optional[str]:
+    """Tenta encontrar o arquivo de log em múltiplos locais."""
+    env_path = os.getenv("LOG_FILE_PATH")
+    if env_path and os.path.exists(env_path): return env_path
+    
+    prod_path = "/var/log/supervisor/backend.out.log"
+    if os.path.exists(prod_path): return prod_path
+    
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend.out.log")
+    if os.path.exists(local_path): return local_path
+        
+    return None
+
+def get_optimized_embeddings():
+    """Fábrica que retorna os Embeddings com Cache e Rate Limit ativados"""
+    if not API_KEY:
+        raise ValueError("GEMINI_API_KEY not configured")
+        
+    # Mantemos o modelo de embedding padrão (geralmente funciona com todos)
+    base_embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=API_KEY,
+        transport="rest",
+        task_type="retrieval_document"
+    )
+    
+    return OptimizedEmbeddings(
+        base_embeddings,
+        use_cache=USE_CACHE,
+        batch_size=BATCH_SIZE,
+        delay_between_batches=DELAY_SECONDS
+    )
+
+def get_vectorstore():
+    """Retorna a instância do ChromaDB configurada com Embeddings Otimizados"""
+    chroma_abs_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
+    embeddings = get_optimized_embeddings()
+    
+    return Chroma(
+        persist_directory=chroma_abs_path,
+        embedding_function=embeddings
+    )
+
+def initialize_rag_system():
+    """Inicializa o sistema RAG"""
+    global rag_chain, vectorstore_instance
+    
+    if not API_KEY:
+        return {"success": False, "error": "GEMINI_API_KEY not configured"}
+
+    try:
+        # 1. Setup VectorStore
+        vectorstore_instance = get_vectorstore()
+        retriever = vectorstore_instance.as_retriever(search_kwargs={"k": RETRIEVAL_K})
+        
+        # 2. Setup LLM
+        # ATUALIZAÇÃO: Usando modelo confirmado na sua lista
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash", 
+            temperature=0.1,
+            google_api_key=API_KEY,
+            max_retries=1,              
+            transport="rest"
+        )
+        
+        # 3. Setup Prompt
+        PROMPT_TEMPLATE = """
+You are the **GeneXus Code Assistant**, a senior GeneXus expert. Your mission is to provide complete and robust solutions.
+
+CONTEXT (GeneXus Documentation):
+{context}
+
+USER QUESTION: {question}
+"""
+        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs) if docs else "No relevant context found."
+        
+        # 4. Create Chain
+        rag_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
+        
+        return {"success": True, "message": "RAG system initialized (Model: gemini-2.0-flash)"}
+        
+    except Exception as e:
+        logger.error(f"RAG Init Error: {e}")
+        return {"success": False, "error": str(e)}
+
+# --- FUNÇÃO DE EXECUÇÃO SEGURA ---
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=4, max=20),
+    retry=retry_if_exception_type(Exception)
+)
+def run_chain_with_retry(chain, message):
+    logger.info("Attempting to invoke chain...")
+    return chain.invoke(message)
+
+# --- LIFESPAN ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Application startup initiated")
+    result = initialize_rag_system()
+    if result["success"]:
+        logger.info("RAG system initialized", extra={"init_message": result.get("message")})
+    else:
+        logger.error("RAG init failed", extra={"init_error": result.get("error")})
+    yield
+    logger.info("Application shutdown")
+
+# --- APP CONFIG ---
+app = FastAPI(title="GeneXus AI Assistant API", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -80,11 +204,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables for RAG chain
-rag_chain = None
-retriever = None
-
-# Pydantic models
+# --- MODELS ---
 class ChatRequest(BaseModel):
     message: str
 
@@ -92,7 +212,7 @@ class ChatResponse(BaseModel):
     response: str
     context_used: bool
     error: Optional[str] = None
-    retry_after: Optional[int] = None  # Seconds to wait before retry
+    retry_after: Optional[int] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -108,523 +228,206 @@ class IndexStatusResponse(BaseModel):
 class IngestionResponse(BaseModel):
     status: str
     message: str
-    progress: Optional[str] = None
     chunks_created: Optional[int] = None
-    cache_hits: Optional[int] = None
-    api_calls: Optional[int] = None
 
-def create_optimized_embeddings():
-    """Create embeddings instance with rate limiting"""
-    from langchain_google_genai import GoogleGenerativeAIEmbeddings
-    
-    base_embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/text-embedding-004",
-        google_api_key=API_KEY
-    )
-    
-    return OptimizedEmbeddings(
-        base_embeddings,
-        use_cache=USE_CACHE,
-        batch_size=BATCH_SIZE,
-        delay_between_batches=DELAY_SECONDS
-    )
+# --- ENDPOINTS ---
 
-# Initialize RAG system
-def initialize_rag():
-    """Initialize the RAG chain with error handling"""
-    global rag_chain, retriever
-    
+@app.get("/api/ping-ai")
+async def ping_ai():
+    """Testa apenas a conexão com o Gemini (sem RAG/VectorStore)"""
     if not API_KEY:
-        return {"success": False, "error": "GEMINI_API_KEY not configured"}
+        raise HTTPException(status_code=500, detail="API Key not configured")
     
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-        from langchain_community.vectorstores import Chroma
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_core.runnables import RunnablePassthrough
-        from langchain_core.output_parsers import StrOutputParser
-        
-        # Initialize embeddings
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
-            google_api_key=API_KEY
+        # ATUALIZAÇÃO: Usando modelo confirmado
+        test_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=API_KEY,
+            temperature=0,
+            max_retries=1
         )
-        
-        # Load vector store
-        chroma_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
-        vectorstore = Chroma(
-            persist_directory=chroma_path,
-            embedding_function=embeddings
-        )
-        
-        retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
-        
-        # Initialize LLM
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",
-            temperature=0.1,
-            google_api_key=API_KEY
-        )
-        
-        # Create prompt template
-        PROMPT_TEMPLATE = """
-You are the **GeneXus Code Assistant**, a senior GeneXus expert. Your mission is to provide complete and robust solutions, following best practices.
-
-**CODE AND RESPONSE GUIDELINES:**
-1.  **GeneXus Priority:** Always generate code **EXCLUSIVELY in GeneXus syntax**. Use code blocks (```genexus).
-2.  **Focus on Structured Data:** Prioritize information found in **tables, property lists, and syntax definitions** within the 'CONTEXT'.
-3.  **Contextual Inference:** If the 'CONTEXT' describes a process or data flow, **infer the logical flow** and translate it to the correct GeneXus syntax.
-4.  **Strict Fidelity to Context (RAG):** Your response must be **entirely based on the provided 'CONTEXT'**.
-5.  **Intelligent Rejection:** If the context is insufficient, decline to answer.
-6.  **Language: Must interpret all languages but the response must always be in PT-BR or the language provided.
-
-CONTEXT (GeneXus Documentation and Tutorials):
-{context}
-
-USER QUESTION: {question}
-"""
-        
-        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-        
-        def format_docs(docs):
-            if not docs:
-                return "No relevant context found."
-            return "\n\n".join(doc.page_content for doc in docs)
-        
-        # Create RAG chain
-        rag_chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
-            | prompt
-            | llm
-            | StrOutputParser()
-        )
-        
-        return {"success": True, "message": "RAG system initialized successfully"}
-        
+        response = test_llm.invoke("Responda apenas com a palavra 'Pong'")
+        return {
+            "status": "success", 
+            "message": "Connection established", 
+            "ai_reply": response.content,
+            "model_used": "gemini-2.0-flash"
+        }
     except Exception as e:
-        return {"success": False, "error": str(e)}
-
-# Initialize on startup
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Application startup initiated")
-    result = initialize_rag()
-    if result["success"]:
-        logger.info("RAG system initialized successfully", extra={
-            "rag_initialized": True,
-            "init_message": result.get("message")
-        })
-    else:
-        logger.error("RAG system initialization failed", extra={
-            "rag_initialized": False,
-            "init_error": result.get("error")
-        })
+        logger.error(f"Ping AI failed: {e}")
+        return {
+            "status": "error", 
+            "message": "Could not connect to Gemini API", 
+            "detail": str(e)
+        }
 
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint"""
-    api_configured = API_KEY is not None and API_KEY != ""
+    api_configured = bool(API_KEY)
     db_loaded = rag_chain is not None
-    
     status = "healthy" if (api_configured and db_loaded) else "degraded"
-    
-    message = "System operational"
-    if not api_configured:
-        message = "API key not configured. Check .env file."
-    elif not db_loaded:
-        message = "Vector database not loaded. Run ingestion scripts."
-    
-    logger.info("Health check requested", extra={
-        "status": status,
-        "api_configured": api_configured,
-        "db_loaded": db_loaded
-    })
     
     return HealthResponse(
         status=status,
         api_key_configured=api_configured,
         database_loaded=db_loaded,
-        message=message
+        message="System operational" if status == "healthy" else "Check logs/config"
     )
 
 @app.get("/api/index-status", response_model=IndexStatusResponse)
 async def index_status():
-    """Check vector database index status"""
     try:
-        chroma_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
-        
-        if not os.path.exists(chroma_path):
-            return IndexStatusResponse(
-                exists=False,
-                document_count=0,
-                message="Vector database not found. Run 'python ingest.py' or 'python ingest_site.py' first."
-            )
-        
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        from langchain_community.vectorstores import Chroma
-        
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
-            google_api_key=API_KEY
-        )
-        
-        vectorstore = Chroma(
-            persist_directory=chroma_path,
-            embedding_function=embeddings
-        )
-        
-        count = vectorstore._collection.count()
-        
+        vs = get_vectorstore()
+        count = vs._collection.count()
         return IndexStatusResponse(
-            exists=True,
-            document_count=count,
-            message=f"Vector database loaded with {count} document chunks"
+            exists=True, 
+            document_count=count, 
+            message=f"Vector database loaded with {count} chunks"
         )
-        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error checking index: {str(e)}")
+        return IndexStatusResponse(exists=False, document_count=0, message=str(e))
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Chat endpoint for RAG queries"""
-    logger.info("Chat request received", extra={
-        "message_length": len(request.message) if request.message else 0
-    })
-    
     if not request.message or not request.message.strip():
-        logger.warning("Empty message received")
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
-    if not API_KEY:
-        logger.error("Chat request failed: API key not configured")
-        return ChatResponse(
-            response="",
-            context_used=False,
-            error="API key not configured. Please set GEMINI_API_KEY in .env file."
-        )
-    
     if not rag_chain:
-        logger.error("Chat request failed: RAG system not initialized")
-        return ChatResponse(
-            response="",
-            context_used=False,
-            error="RAG system not initialized. Please check if vector database exists."
-        )
+        init_result = initialize_rag_system()
+        if not init_result["success"]:
+            return ChatResponse(response="", context_used=False, error="RAG system not initialized")
     
     try:
-        response = rag_chain.invoke(request.message)
-        
-        logger.info("Chat response generated successfully", extra={
-            "response_length": len(response),
-            "context_used": True
-        })
-        
-        return ChatResponse(
-            response=response,
-            context_used=True,
-            error=None
-        )
+        response = run_chain_with_retry(rag_chain, request.message)
+        return ChatResponse(response=response, context_used=True)
         
     except Exception as e:
         error_str = str(e)
-        retry_after = None
-        error_message = None
-        
-        # Check for quota/rate limit errors (429)
-        if "429" in error_str or "quota" in error_str.lower() or "rate limit" in error_str.lower():
-            # Try to extract retry delay
-            import re
-            retry_match = re.search(r'retry in (\d+\.?\d*)', error_str, re.IGNORECASE)
-            if retry_match:
-                retry_after = int(float(retry_match.group(1)))
-            else:
-                retry_after = 30  # Default to 30 seconds
-            
-            error_message = "Muitas requisições no momento. Aguarde alguns segundos e tente novamente."
-            
-            logger.warning("Rate limit error", extra={
-                "error_type": "rate_limit",
-                "retry_after": retry_after,
-                "error_detail": error_str[:200]
-            })
-        
-        # Check for other API errors
-        elif "API" in error_str or "authentication" in error_str.lower():
-            error_message = "Erro de autenticação com a API. Verifique suas credenciais."
-            logger.error("Authentication error", extra={
-                "error_type": "authentication",
-                "error_detail": error_str[:200]
-            })
-        
-        # Generic error
-        else:
-            error_message = "Erro ao processar a solicitação. Tente novamente."
-            logger.error("Chat processing error", extra={
-                "error_type": "generic",
-                "error_detail": error_str[:200]
-            })
-        
+        logger.error(f"Chat error after retries: {error_str}")
         return ChatResponse(
-            response="",
-            context_used=False,
-            error=error_message,
-            retry_after=retry_after
+            response="", 
+            context_used=False, 
+            error="O servidor está sobrecarregado (Rate Limit). Tente novamente em 1 minuto.",
+            retry_after=60
         )
 
 @app.post("/api/ingest-pdf", response_model=IngestionResponse)
 async def ingest_pdf_files(files: List[UploadFile] = File(...)):
-    """Ingest uploaded PDF files"""
-    logger.info("PDF ingestion request received", extra={
-        "file_count": len(files) if files else 0
-    })
-    
     if not API_KEY:
-        logger.error("PDF ingestion failed: API key not configured")
         raise HTTPException(status_code=400, detail="API key not configured")
     
-    if not files:
-        logger.warning("PDF ingestion failed: No files provided")
-        raise HTTPException(status_code=400, detail="No files provided")
-    
+    temp_files = []
     try:
-        from langchain_community.document_loaders import PyPDFLoader
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        from langchain_community.vectorstores import Chroma
-        
         documents = []
-        temp_files = []
-        
-        # Save uploaded files temporarily
         for file in files:
-            if not file.filename.endswith('.pdf'):
-                continue
-                
+            if not file.filename.endswith('.pdf'): continue
+            
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
             temp_files.append(temp_file.name)
-            
             with open(temp_file.name, 'wb') as f:
                 content = await file.read()
                 f.write(content)
             
-            # Load PDF
             loader = PyPDFLoader(temp_file.name)
             documents.extend(loader.load())
-        
+
         if not documents:
-            return IngestionResponse(
-                status="error",
-                message="No valid PDF documents found in uploaded files"
-            )
-        
-        # Split into chunks
+            return IngestionResponse(status="error", message="No valid PDF documents found")
+
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200"))
         )
         chunks = text_splitter.split_documents(documents)
+
+        vs = get_vectorstore()
+        vs.add_documents(chunks) 
         
-        # Create embeddings
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
-            google_api_key=API_KEY
-        )
+        initialize_rag_system()
         
-        # Add to vector store
-        chroma_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
-        
-        try:
-            vectorstore = Chroma(
-                persist_directory=chroma_path,
-                embedding_function=embeddings
-            )
-            vectorstore.add_documents(chunks)
-        except:
-            vectorstore = Chroma.from_documents(
-                documents=chunks,
-                embedding=embeddings,
-                persist_directory=chroma_path
-            )
-        
-        # Clean up temp files
-        for temp_file in temp_files:
-            try:
-                os.remove(temp_file)
-            except:
-                pass
-        
-        # Reinitialize RAG
-        initialize_rag()
-        
-        logger.info("PDF ingestion completed successfully", extra={
-            "files_processed": len(files),
-            "chunks_created": len(chunks),
-            "documents_loaded": len(documents)
-        })
-        
-        return IngestionResponse(
-            status="success",
-            message=f"Successfully ingested {len(files)} PDF file(s)",
-            chunks_created=len(chunks)
-        )
-        
+        return IngestionResponse(status="success", message=f"Ingested {len(files)} files", chunks_created=len(chunks))
+
     except Exception as e:
-        logger.error("PDF ingestion failed", extra={
-            "error": str(e)[:200],
-            "file_count": len(files)
-        })
-        return IngestionResponse(
-            status="error",
-            message=f"Error during ingestion: {str(e)}"
-        )
+        logger.error(f"PDF ingestion error: {e}")
+        return IngestionResponse(status="error", message=str(e))
+    finally:
+        for tf in temp_files:
+            if os.path.exists(tf): os.remove(tf)
 
 @app.post("/api/ingest-url", response_model=IngestionResponse)
 async def ingest_from_url(url: str = Form(...)):
-    """Ingest documentation from a specific URL"""
-    logger.info("URL ingestion request received", extra={
-        "url": url[:100] if url else None
-    })
-    
     if not API_KEY:
-        logger.error("URL ingestion failed: API key not configured")
         raise HTTPException(status_code=400, detail="API key not configured")
-    
-    if not url or not url.startswith('http'):
-        logger.warning("URL ingestion failed: Invalid URL", extra={
-            "url": url[:100] if url else None
-        })
-        raise HTTPException(status_code=400, detail="Invalid URL provided")
-    
+
     try:
-        from langchain_community.document_loaders import WebBaseLoader
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
-        from langchain_community.vectorstores import Chroma
-        
-        # Load web content
         loader = WebBaseLoader(url)
         documents = loader.load()
         
         if not documents:
-            return IngestionResponse(
-                status="error",
-                message="No content could be extracted from the URL"
-            )
-        
-        # Split into chunks
+            return IngestionResponse(status="error", message="No content extracted")
+
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=int(os.getenv("CHUNK_SIZE", "1000")),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200"))
         )
         chunks = text_splitter.split_documents(documents)
         
-        # Create embeddings
-        embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
-            google_api_key=API_KEY
-        )
+        vs = get_vectorstore()
+        vs.add_documents(chunks)
         
-        # Add to vector store
-        chroma_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), CHROMA_DB_PATH)
+        initialize_rag_system()
         
-        try:
-            vectorstore = Chroma(
-                persist_directory=chroma_path,
-                embedding_function=embeddings
-            )
-            vectorstore.add_documents(chunks)
-        except:
-            vectorstore = Chroma.from_documents(
-                documents=chunks,
-                embedding=embeddings,
-                persist_directory=chroma_path
-            )
-        
-        # Reinitialize RAG
-        initialize_rag()
-        
-        logger.info("URL ingestion completed successfully", extra={
-            "url": url[:100],
-            "chunks_created": len(chunks),
-            "documents_loaded": len(documents)
-        })
-        
-        return IngestionResponse(
-            status="success",
-            message=f"Successfully ingested content from URL",
-            chunks_created=len(chunks)
-        )
-        
+        return IngestionResponse(status="success", message="URL Ingested", chunks_created=len(chunks))
+
     except Exception as e:
-        logger.error("URL ingestion failed", extra={
-            "error": str(e)[:200],
-            "url": url[:100]
-        })
-        return IngestionResponse(
-            status="error",
-            message=f"Error during ingestion: {str(e)}"
-        )
+        logger.error(f"URL ingestion error: {e}")
+        return IngestionResponse(status="error", message=str(e))
 
 @app.get("/api/logs")
 async def get_logs(lines: int = 100, level: Optional[str] = None, search: Optional[str] = None):
-    """Get application logs"""
-    import subprocess
+    log_file_path = resolve_log_file_path()
     
+    if not log_file_path:
+        return {
+            "logs": [], 
+            "error": "Log file not found. Checked: ENV, /var/log/supervisor/, and local dir.",
+            "path_searched": "/var/log/supervisor/backend.out.log"
+        }
+
     try:
-        log_file = "/var/log/supervisor/backend.out.log"
-        
-        # Read last N lines
-        result = subprocess.run(
-            ["tail", f"-{lines}", log_file],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        if result.returncode != 0:
-            return {"logs": [], "error": "Could not read log file"}
-        
-        # Parse JSON logs
         logs = []
-        for line in result.stdout.strip().split('\n'):
-            if not line.strip():
-                continue
+        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            file_lines = f.readlines()
+            
+        last_lines = file_lines[-lines:] if lines > 0 else file_lines
+        
+        for line in last_lines:
+            if not line.strip(): continue
             try:
-                import json
                 log_entry = json.loads(line)
-                
-                # Filter by level if specified
-                if level and log_entry.get('level') != level:
-                    continue
-                
-                # Filter by search term if specified
-                if search and search.lower() not in str(log_entry).lower():
-                    continue
-                
+                if level and log_entry.get('level') != level: continue
+                if search and search.lower() not in str(log_entry).lower(): continue
                 logs.append(log_entry)
             except json.JSONDecodeError:
-                # If not JSON, add as plain text
-                logs.append({"message": line, "level": "info", "name": "unknown"})
-        
-        return {"logs": logs, "total": len(logs)}
-        
+                if search and search.lower() not in line.lower(): continue
+                logs.append({"message": line.strip(), "level": "system", "timestamp": "unknown"})
+                
+        return {"logs": logs, "total": len(logs), "source": log_file_path}
+
     except Exception as e:
-        logger.error(f"Error fetching logs: {str(e)}")
-        return {"logs": [], "error": str(e)}
+        logger.error(f"Error reading logs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal error reading log: {str(e)}")
 
 @app.get("/api/")
 async def root():
-    """Root endpoint"""
     return {
         "message": "GeneXus AI Assistant API",
-        "version": "2.0.0",
+        "version": "2.7.0 (Stable Gemini 2.0)",
         "endpoints": {
             "health": "/api/health",
             "chat": "/api/chat",
-            "index_status": "/api/index-status",
-            "ingest_pdf": "/api/ingest-pdf",
-            "ingest_url": "/api/ingest-url",
-            "logs": "/api/logs"
+            "logs": "/api/logs",
+            "ping": "/api/ping-ai"
         }
     }
 

@@ -116,7 +116,7 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${BACKEND_URL}/chat`, {
+      const response = await axios.post(`${BACKEND_URL}/api/chat`, {
         message: userInput
       });
 
