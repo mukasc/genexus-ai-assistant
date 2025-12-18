@@ -1,0 +1,13 @@
+{
+  "identity": {
+    "app_name": "GeneXus AI Assistant",
+    "app_subtitle": "Specialized in GeneXus development",
+    "welcome_message": "Welcome! Ask me anything about GeneXus.",
+    "primary_color": "#ff3e00",
+    "secondary_color": "#ff6b3d",
+    "logo_emoji": "🤖"
+  },
+  "llm": { "model_name": "gemini-2.5-flash" },
+  "storage": { "collection_name": "langchain" },
+  "ingestion": { "chunk_size": 1000 }
+}

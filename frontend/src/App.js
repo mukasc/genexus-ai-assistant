@@ -8,6 +8,16 @@ import './App.css';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
 function App() {
+  // --- STATE INICIAL ---
+  const [config, setConfig] = useState({
+    app_name: "AI Assistant", 
+    app_subtitle: "Connecting to server...",
+    welcome_message: "Please wait...",
+    primary_color: "#333",
+    secondary_color: "#555",
+    logo_emoji: "⏳"
+  });
+
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -22,9 +32,58 @@ function App() {
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [retryTimer, setRetryTimer] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
+  
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const retryTimerRef = useRef(null);
+
+  // --- EFEITO INICIAL ROBUSTO ---
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        console.log(`Tentando conectar em: ${BACKEND_URL}/api/config`);
+        const response = await axios.get(`${BACKEND_URL}/api/config`);
+        
+        // SUCESSO: Usa config do backend
+        const newConfig = response.data;
+        setConfig(newConfig);
+        applyTheme(newConfig);
+        document.title = newConfig.app_name;
+        
+      } catch (error) {
+        console.error("Erro fatal ao carregar config:", error);
+        
+        // FALHA: Usa Configuração de Fallback (Para a tela não travar)
+        const fallbackConfig = {
+            app_name: "GeneXus AI (Offline)",
+            app_subtitle: "Backend Connection Failed",
+            welcome_message: "⚠️ Could not connect to the backend server. Please check if server.py is running.",
+            primary_color: "#666666",
+            secondary_color: "#888888",
+            logo_emoji: "🔌"
+        };
+        
+        setConfig(fallbackConfig);
+        applyTheme(fallbackConfig);
+        
+        showToast(`Connection Error: ${error.message}. Is backend running on port 8001?`, "error");
+      }
+    };
+
+    fetchConfig();
+    checkSystemHealth();
+    checkIndexStatus();
+  }, []);
+
+  const applyTheme = (themeConfig) => {
+    const root = document.documentElement;
+    if (themeConfig.primary_color) {
+      root.style.setProperty('--primary-color', themeConfig.primary_color);
+    }
+    if (themeConfig.secondary_color) {
+      root.style.setProperty('--secondary-color', themeConfig.secondary_color);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -35,16 +94,8 @@ function App() {
   }, [messages]);
 
   useEffect(() => {
-    checkSystemHealth();
-    checkIndexStatus();
-  }, []);
-
-  useEffect(() => {
-    // Cleanup retry timer on unmount
     return () => {
-      if (retryTimerRef.current) {
-        clearInterval(retryTimerRef.current);
-      }
+      if (retryTimerRef.current) clearInterval(retryTimerRef.current);
     };
   }, []);
 
@@ -52,18 +103,12 @@ function App() {
     setToast({ message, type, duration });
   };
 
-  const closeToast = () => {
-    setToast(null);
-  };
+  const closeToast = () => setToast(null);
 
   const startRetryTimer = (seconds) => {
     setIsRateLimited(true);
     setRetryTimer(seconds);
-
-    if (retryTimerRef.current) {
-      clearInterval(retryTimerRef.current);
-    }
-
+    if (retryTimerRef.current) clearInterval(retryTimerRef.current);
     retryTimerRef.current = setInterval(() => {
       setRetryTimer((prev) => {
         if (prev <= 1) {
@@ -81,13 +126,7 @@ function App() {
       const response = await axios.get(`${BACKEND_URL}/api/health`);
       setSystemStatus(response.data);
     } catch (error) {
-      console.error('Health check failed:', error);
-      setSystemStatus({
-        status: 'error',
-        api_key_configured: false,
-        database_loaded: false,
-        message: 'Cannot connect to backend'
-      });
+      setSystemStatus({ status: 'error', message: 'Backend Offline' });
     }
   };
 
@@ -102,74 +141,44 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
     if (!input.trim() || loading || isRateLimited) return;
 
-    const userMessage = {
-      role: 'user',
-      content: input,
-      timestamp: new Date().toISOString()
-    };
-
+    const userMessage = { role: 'user', content: input, timestamp: new Date().toISOString() };
     setMessages(prev => [...prev, userMessage]);
     const userInput = input;
     setInput('');
     setLoading(true);
 
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/chat`, {
-        message: userInput
-      });
+      const response = await axios.post(`${BACKEND_URL}/api/chat`, { message: userInput });
 
-      if (response.data.error && response.data.retry_after) {
-        showToast(response.data.error, 'warning', 0);
-        startRetryTimer(response.data.retry_after);
-        setMessages(prev => prev.slice(0, -1));
-        setInput(userInput);
-      } else if (response.data.error) {
-        showToast(response.data.error, 'error');
-        const errorMessage = {
-          role: 'assistant',
-          content: response.data.error,
-          error: true,
-          timestamp: new Date().toISOString()
-        };
-        setMessages(prev => [...prev, errorMessage]);
+      if (response.data.error) {
+        if (response.data.retry_after) {
+          showToast(response.data.error, 'warning', 0);
+          startRetryTimer(response.data.retry_after);
+          setMessages(prev => prev.slice(0, -1));
+          setInput(userInput);
+        } else {
+          showToast(response.data.error, 'error');
+          setMessages(prev => [...prev, { role: 'assistant', content: response.data.error, error: true, timestamp: new Date().toISOString() }]);
+        }
       } else {
-        const assistantMessage = {
-          role: 'assistant',
-          content: response.data.response,
-          error: false,
-          timestamp: new Date().toISOString()
-        };
-        setMessages(prev => [...prev, assistantMessage]);
+        setMessages(prev => [...prev, { role: 'assistant', content: response.data.response, timestamp: new Date().toISOString() }]);
       }
     } catch (error) {
-      let errorMsg = 'Erro de conexão. Verifique sua internet e tente novamente.';
-      
+      let errorMsg = 'Connection error.';
       if (error.response?.status === 429) {
-        errorMsg = 'Muitas requisições no momento. Aguarde alguns segundos e tente novamente.';
-        showToast(errorMsg, 'warning', 0);
+        errorMsg = 'Rate limit exceeded.';
         startRetryTimer(30);
         setMessages(prev => prev.slice(0, -1));
         setInput(userInput);
       } else {
-        showToast(errorMsg, 'error');
-        const errorMessage = {
-          role: 'assistant',
-          content: errorMsg,
-          error: true,
-          timestamp: new Date().toISOString()
-        };
-        setMessages(prev => [...prev, errorMessage]);
+        setMessages(prev => [...prev, { role: 'assistant', content: errorMsg, error: true, timestamp: new Date().toISOString() }]);
       }
+      showToast(errorMsg, error.response?.status === 429 ? 'warning' : 'error');
     } finally {
       setLoading(false);
     }
-  };
-
-  const clearChat = () => {
-    setMessages([]);
   };
 
   const handleFileUpload = async (event) => {
@@ -178,89 +187,54 @@ function App() {
 
     setIngesting(true);
     setShowIngestionMenu(false);
-    setIngestionMessage(`Processando ${files.length} arquivo(s) PDF...`);
+    setIngestionMessage(`Uploading ${files.length} PDF(s)...`);
 
     try {
       const formData = new FormData();
-      for (let i = 0; i < files.length; i++) {
-        formData.append('files', files[i]);
-      }
+      for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
 
-      const response = await axios.post(`${BACKEND_URL}/api/ingest-pdf`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-
+      const response = await axios.post(`${BACKEND_URL}/api/ingest-pdf`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      
       if (response.data.status === 'success') {
-        showToast(
-          `${response.data.message}. ${response.data.chunks_created} fragmentos criados.`,
-          'success'
-        );
-        setIngestionMessage('');
+        showToast(`${response.data.message}`, 'success');
         checkSystemHealth();
         checkIndexStatus();
       } else {
         showToast(response.data.message, 'error');
-        setIngestionMessage('');
       }
-      
-      setIngesting(false);
-
     } catch (error) {
-      const errorMsg = error.response?.data?.detail || error.message || 'Erro ao processar arquivos';
-      showToast(errorMsg, 'error');
+      showToast('Upload failed', 'error');
+    } finally {
       setIngesting(false);
       setIngestionMessage('');
-    }
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
   const handleUrlIngestion = async () => {
-    if (!urlInput.trim()) {
-      showToast('Por favor, insira uma URL válida', 'warning');
-      return;
-    }
-
+    if (!urlInput.trim()) return;
     setIngesting(true);
     setShowUrlInput(false);
-    setShowIngestionMenu(false);
-    setIngestionMessage(`Processando URL: ${urlInput}...`);
+    setIngestionMessage(`Processing URL...`);
 
     try {
       const formData = new FormData();
       formData.append('url', urlInput);
-
-      const response = await axios.post(`${BACKEND_URL}/api/ingest-url`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-
+      const response = await axios.post(`${BACKEND_URL}/api/ingest-url`, formData);
+      
       if (response.data.status === 'success') {
-        showToast(
-          `${response.data.message}. ${response.data.chunks_created} fragmentos criados.`,
-          'success'
-        );
-        setIngestionMessage('');
+        showToast('URL Ingested successfully', 'success');
         checkSystemHealth();
         checkIndexStatus();
       } else {
         showToast(response.data.message, 'error');
-        setIngestionMessage('');
       }
-      
-      setIngesting(false);
-      setUrlInput('');
-
     } catch (error) {
-      const errorMsg = error.response?.data?.detail || error.message || 'Erro ao processar URL';
-      showToast(errorMsg, 'error');
+      showToast('URL Ingest failed', 'error');
+    } finally {
       setIngesting(false);
       setIngestionMessage('');
+      setUrlInput('');
     }
   };
 
@@ -268,8 +242,8 @@ function App() {
     <div className="app">
       <div className="sidebar">
         <div className="sidebar-header">
-          <h2>🤖 GeneXus AI</h2>
-          <p className="subtitle">Assistant</p>
+          <h2>{config.logo_emoji} {config.app_name}</h2>
+          <p className="subtitle">{config.app_subtitle}</p>
         </div>
 
         <div className="sidebar-content">
@@ -280,14 +254,15 @@ function App() {
                 <div className={`status-badge status-${systemStatus.status}`}>
                   {systemStatus.status === 'healthy' ? '✅ Online' : '⚠️ Degraded'}
                 </div>
+                {systemStatus.app_name && 
+                  <p className="option-desc" style={{marginBottom:'8px'}}>Instance: {systemStatus.app_name}</p>
+                }
                 <div className="status-details">
                   <div className="status-item">
-                    <span>API Key:</span>
-                    <span>{systemStatus.api_key_configured ? '✅' : '❌'}</span>
+                    <span>API Key:</span><span>{systemStatus.api_key_configured ? '✅' : '❌'}</span>
                   </div>
                   <div className="status-item">
-                    <span>Database:</span>
-                    <span>{systemStatus.database_loaded ? '✅' : '❌'}</span>
+                    <span>Database:</span><span>{systemStatus.database_loaded ? '✅' : '❌'}</span>
                   </div>
                 </div>
                 <p className="status-message">{systemStatus.message}</p>
@@ -297,15 +272,18 @@ function App() {
 
           {indexStatus && indexStatus.exists && (
             <div className="index-section">
-              <h3>📊 Index</h3>
+              <h3>📊 Knowledge Base</h3>
               <p className="index-count">{indexStatus.document_count} chunks</p>
+              {indexStatus.collection_name && 
+                <p className="option-desc">Collection: {indexStatus.collection_name}</p>
+              }
             </div>
           )}
 
           <div className="info-section">
             <h3>ℹ️ About</h3>
             <p className="info-text">
-              This assistant uses RAG (Retrieval Augmented Generation) to search GeneXus documentation and provide specialized answers.
+              This assistant uses RAG (Retrieval Augmented Generation) to answer questions based on the provided documentation.
             </p>
             <div className="tech-stack">
               <div className="tech-item">🧠 Gemini 2.0 Flash</div>
@@ -320,157 +298,88 @@ function App() {
               className="action-button ingestion-button"
               disabled={ingesting}
             >
-              📚 Ingest Documents
+              📚 Add Knowledge
             </button>
             
             {showIngestionMenu && !ingesting && (
               <div className="ingestion-menu">
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="ingestion-option"
-                  data-testid="ingest-pdf-button"
-                >
+                <button onClick={() => fileInputRef.current?.click()} className="ingestion-option">
                   📄 Upload PDF Files
-                  <span className="option-desc">Select one or more PDF files</span>
                 </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf"
-                  multiple
-                  style={{ display: 'none' }}
-                  onChange={handleFileUpload}
-                />
-                <button 
-                  onClick={() => {
-                    setShowUrlInput(true);
-                    setShowIngestionMenu(false);
-                  }}
-                  className="ingestion-option"
-                  data-testid="ingest-url-button"
-                >
+                <input ref={fileInputRef} type="file" accept=".pdf" multiple style={{ display: 'none' }} onChange={handleFileUpload} />
+                <button onClick={() => { setShowUrlInput(true); setShowIngestionMenu(false); }} className="ingestion-option">
                   🌐 From URL
-                  <span className="option-desc">Enter a documentation URL</span>
                 </button>
               </div>
             )}
             
             {showUrlInput && !ingesting && (
               <div className="url-input-container">
-                <input
-                  type="text"
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  placeholder="https://docs.genexus.com/..."
-                  className="url-input"
-                  data-testid="url-input"
-                />
+                <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://..." className="url-input" />
                 <div className="url-buttons">
-                  <button 
-                    onClick={handleUrlIngestion}
-                    className="url-button url-button-submit"
-                    disabled={!urlInput.trim()}
-                  >
-                    ✅ Ingest
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setShowUrlInput(false);
-                      setUrlInput('');
-                    }}
-                    className="url-button url-button-cancel"
-                  >
-                    ❌ Cancel
-                  </button>
+                  <button onClick={handleUrlIngestion} className="url-button url-button-submit" disabled={!urlInput.trim()}>Add</button>
+                  <button onClick={() => setShowUrlInput(false)} className="url-button url-button-cancel">Cancel</button>
                 </div>
               </div>
             )}
             
-            {ingestionMessage && (
-              <div className={`ingestion-status ${ingesting ? 'ingesting' : ''}`}>
-                {ingestionMessage}
-              </div>
-            )}
+            {ingestionMessage && <div className={`ingestion-status ${ingesting ? 'ingesting' : ''}`}>{ingestionMessage}</div>}
           </div>
 
           <div className="actions-section">
-            <button 
-              onClick={() => setShowLogs(true)}
-              className="action-button logs-button"
-              data-testid="view-logs-button"
-            >
-              📊 Ver Logs
+            <button onClick={() => setShowLogs(true)} className="action-button logs-button">
+              📊 System Logs
             </button>
           </div>
 
-          {messages.length > 0 && (
-            <button onClick={clearChat} className="clear-button">
-              🗑️ Clear Chat
-            </button>
-          )}
+          {messages.length > 0 && <button onClick={() => setMessages([])} className="clear-button">🗑️ Clear Chat</button>}
         </div>
       </div>
 
       <div className="main-content">
         <div className="chat-header">
-          <h1>🤖 GeneXus AI Assistant</h1>
-          <p className="header-subtitle">Specialized in GeneXus development powered by official documentation</p>
+          <h1>{config.logo_emoji} {config.app_name}</h1>
+          <p className="header-subtitle">{config.app_subtitle}</p>
         </div>
 
         <div className="messages-container">
           {messages.length === 0 ? (
             <div className="welcome-message">
-              <div className="welcome-icon">👋</div>
-              <h2>Welcome to GeneXus AI Assistant!</h2>
-              <p>Ask me anything about GeneXus development, and I'll search the documentation to help you.</p>
+              <div className="welcome-icon">{config.logo_emoji}</div>
+              <h2>Hello!</h2>
+              <p>{config.welcome_message}</p>
               <div className="example-questions">
                 <p className="example-label">Try asking:</p>
-                <div className="example-item">"Como criar um Data Provider em GeneXus?"</div>
-                <div className="example-item">"What are the best practices for GeneXus objects?"</div>
-                <div className="example-item">"Explain GeneXus transactions"</div>
+                <div className="example-item">"How does this system work?"</div>
+                <div className="example-item">"Summarize the documents"</div>
               </div>
             </div>
           ) : (
             messages.map((msg, index) => (
               <div key={index} className={`message message-${msg.role} ${msg.error ? 'message-error' : ''}`}>
-                <div className="message-icon">
-                  {msg.role === 'user' ? '👤' : msg.error ? '❌' : '🤖'}
-                </div>
+                <div className="message-icon">{msg.role === 'user' ? '👤' : msg.error ? '❌' : config.logo_emoji}</div>
                 <div className="message-content">
                   <div className="message-text">
-                    <ReactMarkdown
+                    <ReactMarkdown 
                       components={{
                         a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                        code: ({node, inline, className, children, ...props}) => {
-                          return inline ? (
-                            <code className="inline-code" {...props}>{children}</code>
-                          ) : (
-                            <div className="code-block-wrapper">
-                              <code className="block-code" {...props}>{children}</code>
-                            </div>
-                          )
-                        }
+                        code: ({node, inline, className, children, ...props}) => inline ? <code className="inline-code" {...props}>{children}</code> : <div className="code-block-wrapper"><code className="block-code" {...props}>{children}</code></div>
                       }}
                     >
                       {msg.content}
                     </ReactMarkdown>
                   </div>
-                  <div className="message-time">
-                    {new Date(msg.timestamp).toLocaleTimeString()}
-                  </div>
+                  <div className="message-time">{new Date(msg.timestamp).toLocaleTimeString()}</div>
                 </div>
               </div>
             ))
           )}
           {loading && (
             <div className="message message-assistant">
-              <div className="message-icon">🤖</div>
+              <div className="message-icon">{config.logo_emoji}</div>
               <div className="message-content">
                 <div className="loading-indicator">
-                  <div className="loading-dot"></div>
-                  <div className="loading-dot"></div>
-                  <div className="loading-dot"></div>
-                  <span className="loading-text">Thinking...</span>
+                  <div className="loading-dot"></div><div className="loading-dot"></div><div className="loading-dot"></div>
                 </div>
               </div>
             </div>
@@ -484,36 +393,19 @@ function App() {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={isRateLimited ? `Aguarde ${retryTimer}s...` : "Pergunte algo sobre GeneXus..."}
+              placeholder={isRateLimited ? `Wait ${retryTimer}s...` : `Ask ${config.app_name}...`}
               className="chat-input"
               disabled={loading || isRateLimited}
-              data-testid="chat-input"
             />
-            <button 
-              type="submit" 
-              className="send-button" 
-              disabled={loading || !input.trim() || isRateLimited}
-              data-testid="send-button"
-              title={isRateLimited ? `Aguarde ${retryTimer} segundos` : 'Enviar mensagem'}
-            >
-              {loading ? '⏳' : isRateLimited ? `⏱️ ${retryTimer}s` : '🚀'}
+            <button type="submit" className="send-button" disabled={loading || !input.trim() || isRateLimited}>
+              {loading ? '⏳' : isRateLimited ? `⏱️` : '🚀'}
             </button>
           </form>
         </div>
       </div>
 
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          duration={toast.duration}
-          onClose={closeToast}
-        />
-      )}
-
-      {showLogs && (
-        <LogsViewer onClose={() => setShowLogs(false)} />
-      )}
+      {toast && <Toast message={toast.message} type={toast.type} duration={toast.duration} onClose={closeToast} />}
+      {showLogs && <LogsViewer onClose={() => setShowLogs(false)} />}
     </div>
   );
 }
