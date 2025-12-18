@@ -4,6 +4,8 @@ import logging
 import json
 import time
 import hashlib
+import tempfile
+import shutil
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
@@ -121,7 +123,7 @@ DEFAULT_CONFIG = {
         "logo_emoji": "⚠️"
     },
     "llm": {
-        "model_name": "gemini-2.0-flash",
+        "model_name": "gemini-2.5-flash",
         "temperature": 0.1,
         "system_prompt": "You are a helpful assistant. Context: {context} Question: {question}"
     },
@@ -246,7 +248,7 @@ def initialize_rag_system():
         retriever = vectorstore_instance.as_retriever(search_kwargs={"k": 3})
         
         # Configs do JSON
-        model = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-2.0-flash')
+        model = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-2.5-flash')
         temp = APP_CONFIG.get('llm', {}).get('temperature', 0.1)
         sys_prompt = APP_CONFIG.get('llm', {}).get('system_prompt', "Context: {context} Question: {question}")
         
@@ -369,7 +371,7 @@ async def get_logs(lines: int = 100, level: Optional[str] = None, search: Option
 async def ping_ai():
     if not API_KEY: raise HTTPException(status_code=500, detail="No API Key")
     try:
-        model = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-2.0-flash')
+        model = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-2.5-flash')
         llm = ChatGoogleGenerativeAI(model=model, google_api_key=API_KEY, temperature=0, max_retries=1)
         res = llm.invoke("Pong")
         return {"status": "success", "reply": res.content, "model": model}
@@ -397,9 +399,22 @@ async def chat(req: ChatRequest):
     if not rag_chain: initialize_rag_system()
     if not rag_chain: return ChatResponse(response="", context_used=False, error="System not ready")
     try:
-        logger.info("Processing Query", extra={"q": req.message, "app": APP_CONFIG['identity']['app_name']})
+        # --- 1. LOG CONFIGURAÇÕES (Model, Temp, Sys_Prompt) ---
+        llm_conf = APP_CONFIG.get('llm', {})
+        logger.info("Chat Configuration", extra={
+            "model_name": llm_conf.get('model_name'),
+            "temperature": llm_conf.get('temperature'),
+            "system_prompt": llm_conf.get('system_prompt')
+        })
+
+        # --- 2. LOG PROMPT ENVIADO ---
+        logger.info(f"Prompt Enviado: {req.message}", extra={"prompt": req.message})
+        
         res = run_chain_with_retry(rag_chain, req.message)
-        logger.info("Response Generated", extra={"len": len(res)})
+        
+        # --- 3. LOG RESPOSTA/RETORNO ---
+        logger.info(f"Resposta Gerada: {res}", extra={"response_content": res})
+        
         return ChatResponse(response=res, context_used=True)
     except Exception as e:
          # Tratamento de erro melhorado: Desembrulha o RetryError
