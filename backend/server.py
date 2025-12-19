@@ -41,7 +41,8 @@ class OptimizedEmbeddings:
         self.use_cache = use_cache
         self.batch_size = batch_size
         self.delay = delay
-        self.cache_dir = ".embeddings_cache"
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.cache_dir = os.path.join(root_dir, "data", "embeddings_cache")
         if use_cache and not os.path.exists(self.cache_dir):
             try: os.makedirs(self.cache_dir)
             except: pass 
@@ -159,15 +160,24 @@ LOG_FILE_PATH = os.getenv("LOG_FILE_PATH")
 def resolve_log_file_path() -> str:
     if LOG_FILE_PATH: return LOG_FILE_PATH
     
-    # Tenta caminho local
-    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend.out.log")
+    # --- ALTERAÇÃO: Define caminho na pasta data/logs ---
+    # 1. Pega a raiz do projeto (dois níveis acima de server.py)
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    # Cria arquivo se não existir
-    if not os.path.exists(local_path):
+    # 2. Define a pasta de logs
+    log_dir = os.path.join(root_dir, "data", "logs")
+    
+    # 3. Cria a pasta se não existir
+    if not os.path.exists(log_dir):
         try:
-            with open(local_path, 'a') as f: pass
-        except: pass
-    return local_path
+            os.makedirs(log_dir)
+        except Exception as e:
+            print(f"Erro ao criar pasta de logs: {e}")
+            # Fallback para pasta local se falhar permissão
+            return os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend.out.log")
+
+    # 4. Retorna o caminho final do arquivo
+    return os.path.join(log_dir, "backend.out.log")
 
 CURRENT_LOG_FILE = resolve_log_file_path()
 
@@ -229,9 +239,27 @@ def get_optimized_embeddings():
     return OptimizedEmbeddings(base, use_cache=True, batch_size=10, delay=2.0)
 
 def get_vectorstore():
+    # 1. Tenta pegar do .env primeiro (Prioridade Máxima)
+    env_path = os.getenv('CHROMA_DB_PATH')
+    
+    # 2. Se não tiver no .env, tenta do JSON, se não, usa default
+    json_path = APP_CONFIG.get('storage', {}).get('persist_directory', './chroma_db')
+    
+    # Define o diretório final
+    p_dir = env_path if env_path else json_path
+    
+    # Define o nome da coleção
     coll_name = APP_CONFIG.get('storage', {}).get('collection_name', 'default')
-    p_dir = APP_CONFIG.get('storage', {}).get('persist_directory', './chroma_db')
-    abs_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), p_dir)
+
+    # Calcula o caminho absoluto a partir da raiz do projeto
+    # __file__ = backend/server.py
+    # dirname = backend/
+    # dirname(dirname) = Raiz do Projeto/
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    abs_dir = os.path.join(root_dir, p_dir)
+    
+    # Log para Debug (Isso vai salvar sua vida agora)
+    logger.info(f"Tentando carregar ChromaDB em: {abs_dir}")
     
     return Chroma(
         collection_name=coll_name, 
