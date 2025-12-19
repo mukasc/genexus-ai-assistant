@@ -42,7 +42,7 @@ class OptimizedEmbeddings:
         self.batch_size = batch_size
         self.delay = delay
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.cache_dir = os.path.join(root_dir, "data", "embeddings_cache")
+        self.cache_dir = os.path.join(root_dir, "data", ".embeddings_cache")
         if use_cache and not os.path.exists(self.cache_dir):
             try: os.makedirs(self.cache_dir)
             except: pass 
