@@ -7,7 +7,8 @@ from app.config import APP_CONFIG
 from app.logging_config import logger
 from app.core import rag
 from app.api import routes
-from app.api import admin # <--- 1. NOVO IMPORT
+from app.api import admin
+from app.api import feedback
 
 # Ciclo de Vida (Inicialização do RAG)
 @asynccontextmanager
@@ -35,7 +36,8 @@ app.add_middleware(
 
 # Inclusão de Rotas
 app.include_router(routes.router, prefix="/api")
-app.include_router(admin.router, prefix="/api/admin", tags=["Admin"]) # <--- 2. NOVA ROTA
+app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
 
 @app.get("/api/")
 async def root():

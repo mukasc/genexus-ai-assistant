@@ -62,7 +62,22 @@ def initialize_rag_system():
 
     try:
         vectorstore_instance = get_vectorstore()
-        retriever = vectorstore_instance.as_retriever(search_kwargs={"k": 3})
+        
+        # --- CONFIGURAÇÃO DE RETRIEVAL ---
+        retrieval_conf = APP_CONFIG.get('retrieval', {})
+        k_docs = retrieval_conf.get('k', 4)
+        score_thresh = retrieval_conf.get('score_threshold', 0.8) # Padrão 0.6 se não tiver no JSON
+
+        logger.info(f"Configurando Retriever: k={k_docs}, threshold={score_thresh}")
+
+        # Usa 'similarity_score_threshold' para filtrar lixo
+        retriever = vectorstore_instance.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={
+                "score_threshold": score_thresh,
+                "k": k_docs
+            }
+        )
         
         # Configs do JSON
         model_name = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-2.5-flash')
@@ -81,6 +96,11 @@ def initialize_rag_system():
         
         # Função auxiliar para formatar texto, mas mantemos os docs originais
         def format_docs_text(docs):
+            if not docs:
+                # Se o filtro remover tudo, loga um aviso
+                logger.warning("Nenhum documento atingiu o score mínimo de relevância.", extra={"docs_found": False})
+                return "" # Retorna vazio, o Prompt deve lidar com isso ("I didn't find...")
+
             content = "\n\n".join(d.page_content for d in docs)
             if docs:
                 logger.info(f"Retrieved {len(docs)} docs, total chars: {len(content)}", extra={"docs_found": True})

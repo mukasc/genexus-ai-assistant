@@ -283,12 +283,54 @@ body {
 .message-content {
   flex: 1;
   min-width: 0; /* Impede overflow de código */
+  display: flex;
+  flex-direction: column;
+}
+
+.message-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 8px;
+    border-top: 1px solid rgba(0,0,0,0.05);
+    padding-top: 6px;
 }
 
 .message-time {
   font-size: 11px;
   color: #9ca3af;
-  margin-top: 4px;
+}
+
+/* Feedback Actions */
+.feedback-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.feedback-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    opacity: 0.4;
+    transition: all 0.2s;
+    padding: 2px;
+    border-radius: 4px;
+}
+
+.feedback-btn:hover:not(:disabled) {
+    opacity: 1;
+    transform: scale(1.2);
+    background-color: rgba(0,0,0,0.05);
+}
+
+.feedback-btn.active {
+    opacity: 1;
+    cursor: default;
+}
+
+.feedback-btn:disabled {
+    cursor: not-allowed;
 }
 
 /* --- MARKDOWN STYLING (CORREÇÃO DE ESPAÇAMENTO E CORES) --- */

@@ -139,6 +139,44 @@ function App() {
     }
   };
 
+  // --- FUNÇÃO DE FEEDBACK ---
+  const handleFeedback = async (index, score) => {
+    const message = messages[index];
+    const prevMessage = messages[index - 1]; // Assume que a anterior é a pergunta do usuário
+
+    if (!message || !prevMessage) return;
+
+    // Atualiza UI Otimisticamente (Marca como votado)
+    const updatedMessages = [...messages];
+    updatedMessages[index] = { ...message, feedback: score };
+    setMessages(updatedMessages);
+
+                                                                                          
+    try {
+      await axios.post(`${BACKEND_URL}/api/feedback/`, {
+        user_question: prevMessage.content,
+        bot_response: message.content,
+        score: score
+      });
+      if (score > 0) showToast("Obrigado pelo feedback positivo! 👍", "success", 2000);
+      else showToast("Obrigado! Vamos melhorar com seu feedback. 👎", "info", 2000);
+    } catch (error) {
+      console.error("Feedback error:", error);
+      
+      // Tratamento de erro detalhado para Debug
+      const status = error.response?.status;
+      const detail = error.response?.data?.detail;
+      const errorMsg = status ? `Erro ${status}: ${detail || 'Falha no servidor'}` : error.message;
+      
+      showToast(`Falha ao enviar feedback: ${errorMsg}`, "error");
+
+      // Reverte o estado visual se falhar (para o usuário poder tentar de novo)
+      const revertedMessages = [...messages];
+      revertedMessages[index] = { ...message, feedback: null };
+      setMessages(revertedMessages);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim() || loading || isRateLimited) return;
@@ -286,7 +324,7 @@ function App() {
               This assistant uses RAG (Retrieval Augmented Generation) to answer questions based on the provided documentation.
             </p>
             <div className="tech-stack">
-              <div className="tech-item">🧠 Gemini 2.0 Flash</div>
+              <div className="tech-item">🧠 {config.llm?.model_name || "Gemini"}</div>
               <div className="tech-item">📚 ChromaDB</div>
               <div className="tech-item">🔗 LangChain</div>
             </div>
@@ -349,27 +387,53 @@ function App() {
               <h2>Hello!</h2>
               <p>{config.welcome_message}</p>
               <div className="example-questions">
-                <p className="example-label">Try asking:</p>
-                <div className="example-item">"How does this system work?"</div>
-                <div className="example-item">"Summarize the documents"</div>
+                <p className="example-label">Tente perguntar:</p>
+                <div className="example-item" onClick={() => setInput("O que é Genexus?")}>"O que é Genexus?"</div>
+                <div className="example-item" onClick={() => setInput("Crie um exemplo de transação")}>"Crie um exemplo de transação"</div>
               </div>
             </div>
           ) : (
             messages.map((msg, index) => (
-              <div key={index} className={`message message-${msg.role} ${msg.error ? 'message-error' : ''}`}>
-                <div className="message-icon">{msg.role === 'user' ? '👤' : msg.error ? '❌' : config.logo_emoji}</div>
-                <div className="message-content">
-                  <div className="message-text">
-                    <ReactMarkdown 
-                      components={{
-                        a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                        code: ({node, inline, className, children, ...props}) => inline ? <code className="inline-code" {...props}>{children}</code> : <div className="code-block-wrapper"><code className="block-code" {...props}>{children}</code></div>
-                      }}
-                    >
-                      {msg.content}
-                    </ReactMarkdown>
+              <div key={index} className={`message-group ${msg.role}`}>
+                <div className={`message message-${msg.role} ${msg.error ? 'message-error' : ''}`}>
+                  <div className="message-icon">{msg.role === 'user' ? '👤' : msg.error ? '❌' : config.logo_emoji}</div>
+                  <div className="message-content">
+                    <div className="message-text">
+                      <ReactMarkdown 
+                        components={{
+                          a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+                          code: ({node, inline, className, children, ...props}) => inline ? <code className="inline-code" {...props}>{children}</code> : <div className="code-block-wrapper"><code className="block-code" {...props}>{children}</code></div>
+                        }}
+                      >
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                    <div className="message-footer">
+                        <span className="message-time">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                        
+                        {/* --- FEEDBACK BUTTONS --- */}
+                        {msg.role === 'assistant' && !msg.error && (
+                            <div className="feedback-actions">
+                                <button 
+                                    className={`feedback-btn ${msg.feedbackGiven === 1 ? 'active' : ''}`}
+                                    onClick={() => handleFeedback(index, 1)}
+                                    disabled={msg.feedbackGiven}
+                                    title="Good response"
+                                >
+                                    👍
+                                </button>
+                                <button 
+                                    className={`feedback-btn ${msg.feedbackGiven === -1 ? 'active' : ''}`}
+                                    onClick={() => handleFeedback(index, -1)}
+                                    disabled={msg.feedbackGiven}
+                                    title="Bad response"
+                                >
+                                    👎
+                                </button>
+                            </div>
+                        )}
+                    </div>
                   </div>
-                  <div className="message-time">{new Date(msg.timestamp).toLocaleTimeString()}</div>
                 </div>
               </div>
             ))

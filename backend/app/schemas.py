@@ -10,6 +10,16 @@ class ChatResponse(BaseModel):
     error: Optional[str] = None
     retry_after: Optional[int] = None
 
+class FeedbackRequest(BaseModel):
+    user_question: str
+    bot_response: str
+    score: int # 1 para Like, -1 para Dislike
+    comment: Optional[str] = None
+
+class FeedbackResponse(BaseModel):
+    status: str
+    message: str
+
 class IngestionResponse(BaseModel): 
     status: str
     message: str
