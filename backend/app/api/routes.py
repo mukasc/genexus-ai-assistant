@@ -17,6 +17,7 @@ from app.core import rag
 
 router = APIRouter()
 
+# --- Endpoint de Logs ---
 @router.get("/logs")
 async def get_logs(lines: int = 100, level: Optional[str] = None, search: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
     if not os.path.exists(CURRENT_LOG_FILE): 
@@ -56,6 +57,7 @@ async def get_logs(lines: int = 100, level: Optional[str] = None, search: Option
 
 @router.get("/config")
 async def get_frontend_config():
+    """Retorna configurações visuais para o Frontend"""
     return APP_CONFIG.get('identity', DEFAULT_CONFIG['identity'])
 
 @router.get("/health", response_model=HealthResponse)
@@ -72,14 +74,20 @@ async def health():
 async def index_status():
     try:
         vs = rag.vectorstore_instance or rag.get_vectorstore()
+        coll_name = APP_CONFIG.get('storage',{}).get('collection_name')
+        
         # Lógica Simples para ChromaDB
         if hasattr(vs, '_collection'):
             count = vs._collection.count()
         else:
             count = 0
             
-        coll_name = APP_CONFIG.get('storage',{}).get('collection_name')
-        return IndexStatusResponse(exists=True, document_count=count, collection_name=coll_name, message="Loaded (ChromaDB)")
+        return IndexStatusResponse(
+            exists=True, 
+            document_count=count, 
+            collection_name=coll_name, 
+            message="Loaded (ChromaDB)"
+        )
     except Exception as e: 
         return IndexStatusResponse(exists=False, document_count=0, collection_name="error", message=str(e))
 
@@ -88,24 +96,61 @@ async def chat(req: ChatRequest):
     if not rag.rag_chain: rag.initialize_rag_system()
     if not rag.rag_chain: return ChatResponse(response="", context_used=False, error="System not ready")
     try:
+        # 1. Log Configurações
         llm_conf = APP_CONFIG.get('llm', {})
         logger.info("Chat Configuration", extra={
             "model_name": llm_conf.get('model_name'),
             "temperature": llm_conf.get('temperature'),
             "system_prompt": llm_conf.get('system_prompt')
         })
+
+        # 2. Log Prompt
         logger.info(f"Prompt Enviado: {req.message}", extra={"prompt": req.message})
-        res = rag.run_chain_with_retry(rag.rag_chain, req.message)
-        logger.info(f"Resposta Gerada: {res}", extra={"response_content": res})
-        return ChatResponse(response=res, context_used=True)
+        
+        # 3. Execução
+        result = rag.run_chain_with_retry(rag.rag_chain, req.message)
+        
+        # Separa a resposta de texto
+        answer_text = result.get("response", "")
+        source_docs = result.get("sources", [])
+        
+        # --- LÓGICA DE CITAÇÃO DE FONTES (REATIVADA) ---
+        unique_sources = set()
+        for doc in source_docs:
+            # Tenta pegar 'source' do metadata, ou usa 'Desconhecido'
+            src = doc.metadata.get("source", "Desconhecido")
+            # Limpa o caminho para ficar só o nome do arquivo (ex: 'manual.pdf')
+            filename = os.path.basename(src)
+            unique_sources.add(filename)
+            
+        # Adiciona o rodapé se houver fontes
+        if unique_sources:
+            # Formatamos como Markdown limpo com separador
+            footer = "\n\n---\n📚 **Fontes Consultadas:**\n" + "\n".join([f"- `{s}`" for s in unique_sources])
+            answer_text += footer
+            
+        # 4. Log Resposta e Fontes
+        logger.info(f"Resposta Gerada: {answer_text[:50]}...", extra={"response_content": answer_text, "sources": list(unique_sources)})
+        
+        return ChatResponse(response=answer_text, context_used=True)
+
     except Exception as e:
         real_error = e
-        if isinstance(e, RetryError): real_error = e.last_attempt.exception()
-        error_msg = str(e)
-        logger.error(f"Chat Error: {error_msg}", exc_info=True)
-        if "429" in error_msg or "TooManyRequests" in error_msg:
-            return ChatResponse(response="", context_used=False, error="⚠️ Cota Excedida (429). Aguarde 60s.", retry_after=60)
-        return ChatResponse(response="", context_used=False, error="Erro interno do Chat.", retry_after=10)
+        if isinstance(e, RetryError):
+            real_error = e.last_attempt.exception()
+
+        error_msg = str(real_error)
+        logger.error(f"Chat Error Detalhado: {error_msg}", exc_info=True)
+        
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            return ChatResponse(
+                response="", 
+                context_used=False, 
+                error="⚠️ Limite de Cota do Google Atingido. Tente novamente em alguns segundos.", 
+                retry_after=60
+            )
+            
+        return ChatResponse(response="", context_used=False, error=f"Erro no sistema: {str(real_error)[:100]}...", retry_after=10)
 
 @router.post("/ingest-pdf", response_model=IngestionResponse)
 async def ingest_pdf(files: List[UploadFile] = File(...)):
@@ -138,11 +183,23 @@ async def ingest_pdf(files: List[UploadFile] = File(...)):
 @router.post("/ingest-url", response_model=IngestionResponse)
 async def ingest_url(url: str = Form(...)):
     try:
-        docs = WebBaseLoader(url).load()
+        loader = WebBaseLoader(
+            web_path=url,
+            header_template={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+        )
+        docs = loader.load()
+
+        if not docs or len(docs[0].page_content.strip()) < 50:
+            return IngestionResponse(status="error", message="Site retornou conteúdo vazio ou protegido (Pode exigir JavaScript).")
+
         c_size = APP_CONFIG.get('ingestion', {}).get('chunk_size', 1000)
         c_lap = APP_CONFIG.get('ingestion', {}).get('chunk_overlap', 200)
         chunks = RecursiveCharacterTextSplitter(chunk_size=c_size, chunk_overlap=c_lap).split_documents(docs)
         rag.get_vectorstore().add_documents(chunks)
         rag.initialize_rag_system()
-        return IngestionResponse(status="success", message="URL Ingested")
-    except Exception as e: return IngestionResponse(status="error", message=str(e))
+        return IngestionResponse(status="success", message=f"URL Ingested: {len(chunks)} chunks")
+    except Exception as e: 
+        logger.error(f"URL Ingest Error: {e}")
+        return IngestionResponse(status="error", message=f"Erro ao ler site: {str(e)}")

@@ -1,8 +1,10 @@
 import os
+from operator import itemgetter
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
+
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
@@ -25,30 +27,33 @@ def get_optimized_embeddings():
     return OptimizedEmbeddings(base, use_cache=True, batch_size=10, delay=2.0)
 
 def get_vectorstore():
-    # 1. Tenta pegar do .env primeiro (Prioridade Máxima)
-    env_path = os.getenv('CHROMA_DB_PATH')
+    """
+    Retorna a instância do ChromaDB (Local).
+    """
+    embeddings = get_optimized_embeddings()
     
-    # 2. Se não tiver no .env, tenta do JSON, se não, usa default
+    # 1. Definição do Caminho
+    env_path = os.getenv('CHROMA_DB_PATH')
     json_path = APP_CONFIG.get('storage', {}).get('persist_directory', 'data/chroma_db')
     
-    # Define o diretório final
+    # Prioriza .env > json > default
     p_dir = env_path if env_path else json_path
     
-    # Define o nome da coleção
-    coll_name = APP_CONFIG.get('storage', {}).get('collection_name', 'default_collection')
-
-    # Garante caminho absoluto
+    # Garante caminho absoluto a partir da raiz
     if not os.path.isabs(p_dir):
         abs_dir = os.path.join(ROOT_DIR, p_dir)
     else:
         abs_dir = p_dir
+        
+    # 2. Nome da Coleção
+    coll_name = APP_CONFIG.get('storage', {}).get('collection_name', 'default_collection')
     
     logger.info(f"Carregando ChromaDB em: {abs_dir}")
     
     return Chroma(
         collection_name=coll_name, 
         persist_directory=abs_dir, 
-        embedding_function=get_optimized_embeddings()
+        embedding_function=embeddings
     )
 
 def initialize_rag_system():
@@ -74,22 +79,36 @@ def initialize_rag_system():
         
         prompt = ChatPromptTemplate.from_template(sys_prompt)
         
-        def format_docs(docs):
+        # Função auxiliar para formatar texto, mas mantemos os docs originais
+        def format_docs_text(docs):
             content = "\n\n".join(d.page_content for d in docs)
             if docs:
                 logger.info(f"Retrieved {len(docs)} docs, total chars: {len(content)}", extra={"docs_found": True})
             else:
                 logger.warning("No docs found for query", extra={"docs_found": False})
             return content if docs else "No context."
-        
+
+        # Configuração da Chain com Retorno de Fontes (RunnableParallel)
         rag_chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
-            | prompt
-            | llm
-            | StrOutputParser()
+            RunnableParallel({
+                "context": retriever,
+                "question": RunnablePassthrough()
+            })
+            | {
+                "response": (
+                    {
+                        "context": lambda x: format_docs_text(x["context"]),
+                        "question": itemgetter("question")
+                    }
+                    | prompt
+                    | llm
+                    | StrOutputParser()
+                ),
+                "sources": itemgetter("context") # Preserva os objetos Document aqui para extração posterior
+            }
         )
         
-        return {"success": True, "message": f"Initialized '{APP_CONFIG.get('identity', {}).get('app_name')}'"}
+        return {"success": True, "message": f"Initialized '{APP_CONFIG.get('identity', {}).get('app_name')}' with Sources"}
     except Exception as e:
         logger.error(f"RAG Init Error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
