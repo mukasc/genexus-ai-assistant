@@ -57,7 +57,7 @@ function App() {
         const fallbackConfig = {
             app_name: "GeneXus AI (Offline)",
             app_subtitle: "Backend Connection Failed",
-            welcome_message: "⚠️ Could not connect to the backend server. Please check if server.py is running.",
+            welcome_message: "⚠️ Could not connect to the backend server. Please check if main.py is running.",
             primary_color: "#666666",
             secondary_color: "#888888",
             logo_emoji: "🔌"

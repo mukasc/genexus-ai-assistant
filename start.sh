@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # GeneXus AI Assistant - Enterprise Launcher
-# Adapta-se à nova estrutura de pastas (Backend separado)
+# Adapta-se à nova estrutura de pastas Modular (Backend em main.py)
 
 echo "======================================================================"
 echo "  🚀 GeneXus AI Assistant - Enterprise Boot"
@@ -36,7 +36,7 @@ echo ""
 echo "======================================================================"
 echo "  O que você deseja fazer?"
 echo "======================================================================"
-echo "  1. Rodar Servidor API (FastAPI) - Local"
+echo "  1. Rodar Servidor API (Modo DEV - Auto Reload)"
 echo "  2. Subir Infraestrutura Completa (Docker: API + Logs + Banco)"
 echo "  3. Parar/Limpar Infraestrutura Docker"
 echo "  4. Sair"
@@ -47,12 +47,16 @@ read -p "Escolha (1-4): " choice
 case $choice in
     1)
         echo ""
-        echo "🚀 Iniciando Servidor FastAPI (Backend)..."
-        echo "📡 API ficará disponível em http://localhost:8001"
+        echo "🚀 Iniciando Servidor em Modo Desenvolvimento..."
+        echo "🔥 Hot Reload ATIVADO (O servidor reinicia ao salvar arquivos)"
+        echo "📡 API: http://localhost:8001"
+        
         cd backend
-        # Executa diretamente o Python. 
-        # Idealmente usaríamos uvicorn server:app --reload se server.py tiver a instância 'app'
-        python server.py
+        # AQUI ESTÁ O TRUQUE:
+        # Em vez de 'python main.py', usamos 'uvicorn' direto.
+        # main:app significa "arquivo main.py, objeto app"
+        # --reload ativa o monitoramento de arquivos
+        uvicorn main:app --host 0.0.0.0 --port 8001 --reload
         ;;
     2)
         echo ""
