@@ -3,9 +3,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 from app.config import APP_CONFIG
 from app.logging_config import logger
 from app.core import rag
+from app.core.limiter import limiter
 from app.api import routes
 from app.api import admin
 from app.api import feedback
@@ -25,6 +29,9 @@ app = FastAPI(
     root_path="/proxy/8001" # <--- FIX: Ajuste para o Swagger funcionar no ambiente de Proxy/Preview
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # Middleware CORS
 app.add_middleware(
     CORSMiddleware,
@@ -41,7 +48,7 @@ app.include_router(feedback.router, prefix="/api/feedback", tags=["Feedback"])
 
 @app.get("/api/")
 async def root():
-    return {"message": "White Label API", "version": "3.1.0 (Admin Enabled)"}
+    return {"message": "White Label API", "version": "3.3.0 (Rate Limit)"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)

@@ -4,7 +4,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from tenacity import RetryError
 
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
@@ -14,6 +14,7 @@ from app.config import APP_CONFIG, DEFAULT_CONFIG, API_KEY
 from app.logging_config import logger, CURRENT_LOG_FILE
 from app.schemas import ChatRequest, ChatResponse, IngestionResponse, HealthResponse, IndexStatusResponse
 from app.core import rag
+from app.core.limiter import limiter
 
 router = APIRouter()
 
@@ -92,7 +93,8 @@ async def index_status():
         return IndexStatusResponse(exists=False, document_count=0, collection_name="error", message=str(e))
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+@limiter.limit("10/minute")
+async def chat(request: Request, req: ChatRequest):
     if not rag.rag_chain: rag.initialize_rag_system()
     if not rag.rag_chain: return ChatResponse(response="", context_used=False, error="System not ready")
     try:
@@ -153,7 +155,8 @@ async def chat(req: ChatRequest):
         return ChatResponse(response="", context_used=False, error=f"Erro no sistema: {str(real_error)[:100]}...", retry_after=10)
 
 @router.post("/ingest-pdf", response_model=IngestionResponse)
-async def ingest_pdf(files: List[UploadFile] = File(...)):
+@limiter.limit("5/minute") # <--- Limite mais estrito para upload
+async def ingest_pdf(request: Request, files: List[UploadFile] = File(...)):
     if not API_KEY: raise HTTPException(400, "No API Key")
     paths = []
     try:
@@ -181,7 +184,8 @@ async def ingest_pdf(files: List[UploadFile] = File(...)):
             if os.path.exists(p): os.remove(p)
 
 @router.post("/ingest-url", response_model=IngestionResponse)
-async def ingest_url(url: str = Form(...)):
+@limiter.limit("5/minute")
+async def ingest_url(request: Request, url: str = Form(...)):
     try:
         loader = WebBaseLoader(
             web_path=url,

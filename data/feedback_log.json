@@ -12,5 +12,12 @@
     "question": "O que é Genexus?",
     "response_preview": "**GeneXus** é um **software que faz software**.\n\nEle simplifica o processo de desenvolvimento, permi...",
     "comment": null
+  },
+  {
+    "timestamp": "2025-12-20 14:59:05",
+    "score": 1,
+    "question": "Crie um exemplo de transação",
+    "response_preview": "Um exemplo clássico e fundamental de transação em GeneXus, especialmente no contexto de uma bibliote...",
+    "comment": null
   }
 ]
