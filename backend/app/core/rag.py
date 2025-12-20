@@ -25,15 +25,19 @@ def get_optimized_embeddings():
     return OptimizedEmbeddings(base, use_cache=True, batch_size=10, delay=2.0)
 
 def get_vectorstore():
-    # Lógica de prioridade de caminho (.env > json > default)
+    # 1. Tenta pegar do .env primeiro (Prioridade Máxima)
     env_path = os.getenv('CHROMA_DB_PATH')
+    
+    # 2. Se não tiver no .env, tenta do JSON, se não, usa default
     json_path = APP_CONFIG.get('storage', {}).get('persist_directory', 'data/chroma_db')
+    
+    # Define o diretório final
     p_dir = env_path if env_path else json_path
     
-    coll_name = APP_CONFIG.get('storage', {}).get('collection_name', 'default')
+    # Define o nome da coleção
+    coll_name = APP_CONFIG.get('storage', {}).get('collection_name', 'default_collection')
 
-    # Se o caminho já for absoluto ou começar com data/, usamos com cuidado
-    # Mas para garantir, usamos ROOT_DIR
+    # Garante caminho absoluto
     if not os.path.isabs(p_dir):
         abs_dir = os.path.join(ROOT_DIR, p_dir)
     else:
