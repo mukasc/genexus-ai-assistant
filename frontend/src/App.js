@@ -7,6 +7,14 @@ import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
+// Função auxiliar simples para gerar UUID
+const generateUUID = () => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 function App() {
   // --- STATE INICIAL ---
   const [config, setConfig] = useState({
@@ -32,6 +40,10 @@ function App() {
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [retryTimer, setRetryTimer] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
+
+  // --- SESSION ID (MEMÓRIA) ---
+  // Gera um ID único quando a página carrega e mantém durante a sessão
+  const [sessionId] = useState(generateUUID());
   
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -39,6 +51,9 @@ function App() {
 
   // --- EFEITO INICIAL ROBUSTO ---
   useEffect(() => {
+    // LOG DE DEBUG PARA VERIFICAR A SESSÃO
+    console.log("🔍 Current Session ID:", sessionId);
+
     const fetchConfig = async () => {
       try {
         console.log(`Tentando conectar em: ${BACKEND_URL}/api/config`);
@@ -73,7 +88,7 @@ function App() {
     fetchConfig();
     checkSystemHealth();
     checkIndexStatus();
-  }, []);
+  }, [sessionId]); // Adicionado sessionId como dependência para garantir que loga o valor correto
 
   const applyTheme = (themeConfig) => {
     const root = document.documentElement;
@@ -85,9 +100,9 @@ function App() {
     }
   };
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
+  useEffect(() => { scrollToBottom(); }, [messages]);
+  useEffect(() => { return () => { if (retryTimerRef.current) clearInterval(retryTimerRef.current); }; }, []);
 
   useEffect(() => {
     scrollToBottom();
@@ -139,6 +154,12 @@ function App() {
     }
   };
 
+  // --- NOVA FUNÇÃO: COPIAR SESSION ID ---
+  const handleCopySessionId = () => {
+    navigator.clipboard.writeText(sessionId);
+    showToast("Session ID copied to clipboard! 📋", "success", 2000);
+  };
+
   // --- FUNÇÃO DE FEEDBACK ---
   const handleFeedback = async (index, score) => {
     const message = messages[index];
@@ -156,7 +177,8 @@ function App() {
       await axios.post(`${BACKEND_URL}/api/feedback/`, {
         user_question: prevMessage.content,
         bot_response: message.content,
-        score: score
+        score: score,
+        comment: "" 
       });
       if (score > 0) showToast("Obrigado pelo feedback positivo! 👍", "success", 2000);
       else showToast("Obrigado! Vamos melhorar com seu feedback. 👎", "info", 2000);
@@ -188,7 +210,11 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/chat`, { message: userInput });
+       // --- ENVIO COM SESSION ID ---
+      const response = await axios.post(`${BACKEND_URL}/api/chat`, { 
+          message: userInput,
+          session_id: sessionId // <--- AQUI O ID É ENVIADO
+      });
 
       if (response.data.error) {
         if (response.data.retry_after) {
@@ -296,11 +322,18 @@ function App() {
                   <p className="option-desc" style={{marginBottom:'8px'}}>Instance: {systemStatus.app_name}</p>
                 }
                 <div className="status-details">
-                  <div className="status-item">
-                    <span>API Key:</span><span>{systemStatus.api_key_configured ? '✅' : '❌'}</span>
-                  </div>
-                  <div className="status-item">
-                    <span>Database:</span><span>{systemStatus.database_loaded ? '✅' : '❌'}</span>
+                  <div className="status-item"><span>API Key:</span><span>{systemStatus.api_key_configured ? '✅' : '❌'}</span></div>
+                  <div className="status-item"><span>Database:</span><span>{systemStatus.database_loaded ? '✅' : '❌'}</span></div>
+                  <div 
+                    className="status-item" 
+                    onClick={handleCopySessionId} 
+                    style={{cursor: 'pointer'}} 
+                    title="Click to copy Session ID"
+                  >
+                    <span>Session:</span>
+                    <span style={{fontSize: '11px', fontFamily: 'monospace', textDecoration: 'underline dotted'}}>
+                      {sessionId.slice(0, 6)}...
+                    </span>
                   </div>
                 </div>
                 <p className="status-message">{systemStatus.message}</p>
@@ -400,13 +433,9 @@ function App() {
                   <div className="message-content">
                     <div className="message-text">
                       <ReactMarkdown 
-                        components={{
-                          a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />,
-                          code: ({node, inline, className, children, ...props}) => inline ? <code className="inline-code" {...props}>{children}</code> : <div className="code-block-wrapper"><code className="block-code" {...props}>{children}</code></div>
-                        }}
-                      >
-                        {msg.content}
-                      </ReactMarkdown>
+                        components={{         
+                          a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />                                                                                                                                                                                                                           
+                        }}>{msg.content}</ReactMarkdown>
                     </div>
                     <div className="message-footer">
                         <span className="message-time">{new Date(msg.timestamp).toLocaleTimeString()}</span>

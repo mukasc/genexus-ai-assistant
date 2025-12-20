@@ -3,7 +3,12 @@ from operator import itemgetter
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
-from langchain_core.prompts import ChatPromptTemplate
+# Imports para Memória (NOVO)
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -15,6 +20,17 @@ from app.core.embeddings import OptimizedEmbeddings
 # Variáveis Globais de Estado
 rag_chain = None
 vectorstore_instance = None 
+
+# --- MEMÓRIA EM RAM (NOVO) ---
+# Dicionário para guardar histórico: { "session_id": ChatMessageHistory() }
+# Em produção real, isso poderia ser substituído por Redis
+session_store = {}
+
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if session_id not in session_store:
+        session_store[session_id] = ChatMessageHistory()
+    return session_store[session_id]
+# -----------------------------
 
 def get_optimized_embeddings():
     if not API_KEY: raise ValueError("GEMINI_API_KEY missing")
@@ -66,7 +82,7 @@ def initialize_rag_system():
         # --- CONFIGURAÇÃO DE RETRIEVAL ---
         retrieval_conf = APP_CONFIG.get('retrieval', {})
         k_docs = retrieval_conf.get('k', 4)
-        score_thresh = retrieval_conf.get('score_threshold', 0.8) # Padrão 0.6 se não tiver no JSON
+        score_thresh = retrieval_conf.get('score_threshold', 0.8) # Mantendo o filtro alto
 
         logger.info(f"Configurando Retriever: k={k_docs}, threshold={score_thresh}")
 
@@ -80,9 +96,10 @@ def initialize_rag_system():
         )
         
         # Configs do JSON
-        model_name = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-2.5-flash')
+        model_name = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-1.5-flash')
         temp = APP_CONFIG.get('llm', {}).get('temperature', 0.1)
-        sys_prompt = APP_CONFIG.get('llm', {}).get('system_prompt', "Context: {context} Question: {question}")
+        # Pega o System Prompt do JSON
+        sys_instructions = APP_CONFIG.get('llm', {}).get('system_prompt', "You are a helpful assistant.")
         
         llm = ChatGoogleGenerativeAI(
             model=model_name, 
@@ -92,9 +109,15 @@ def initialize_rag_system():
             transport="rest"
         )
         
-        prompt = ChatPromptTemplate.from_template(sys_prompt)
+        # --- NOVO PROMPT TEMPLATE COM HISTÓRICO ---
+        # Substituímos from_template por from_messages para injetar o histórico corretamente
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", sys_instructions),
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "Context:\n{context}\n\nQuestion: {question}")
+        ])
         
-        # Função auxiliar para formatar texto, mas mantemos os docs originais
+        # Função auxiliar para formatar texto
         def format_docs_text(docs):
             if not docs:
                 # Se o filtro remover tudo, loga um aviso
@@ -102,41 +125,45 @@ def initialize_rag_system():
                 return "" # Retorna vazio, o Prompt deve lidar com isso ("I didn't find...")
 
             content = "\n\n".join(d.page_content for d in docs)
-            if docs:
-                logger.info(f"Retrieved {len(docs)} docs, total chars: {len(content)}", extra={"docs_found": True})
-            else:
-                logger.warning("No docs found for query", extra={"docs_found": False})
-            return content if docs else "No context."
+            logger.info(f"Retrieved {len(docs)} relevant docs", extra={"docs_found": True})
+            return content
 
-        # Configuração da Chain com Retorno de Fontes (RunnableParallel)
-        rag_chain = (
+        # Configuração da Chain Interna (Antes da Memória)
+        # Processa: {question, chat_history} -> {response, sources}
+        chain_with_docs = (
             RunnableParallel({
-                "context": retriever,
-                "question": RunnablePassthrough()
+                # Recupera docs usando apenas a pergunta atual
+                "docs": itemgetter("question") | retriever,
+                "question": itemgetter("question"),
+                "chat_history": itemgetter("chat_history")
             })
+            .assign(context=lambda x: format_docs_text(x["docs"]))
             | {
-                "response": (
-                    {
-                        "context": lambda x: format_docs_text(x["context"]),
-                        "question": itemgetter("question")
-                    }
-                    | prompt
-                    | llm
-                    | StrOutputParser()
-                ),
-                "sources": itemgetter("context") # Preserva os objetos Document aqui para extração posterior
+                "response": prompt | llm | StrOutputParser(),
+                "sources": itemgetter("docs") # Preserva os objetos Document
             }
         )
+
+        # --- APLICAÇÃO DA MEMÓRIA ---
+        # Envolve a chain básica com o gerenciador de histórico
+        rag_chain = RunnableWithMessageHistory(
+            chain_with_docs,
+            get_session_history,
+            input_messages_key="question",
+            history_messages_key="chat_history",
+            output_messages_key="response"
+        )
         
-        return {"success": True, "message": f"Initialized '{APP_CONFIG.get('identity', {}).get('app_name')}' with Sources"}
+        return {"success": True, "message": f"Initialized '{APP_CONFIG.get('identity', {}).get('app_name')}' with Memory & Sources"}
     except Exception as e:
         logger.error(f"RAG Init Error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
+# Função de execução atualizada para aceitar config (onde vai o session_id)
 @retry(
     stop=stop_after_attempt(3), 
     wait=wait_exponential(multiplier=2, min=5, max=30), 
     retry=retry_if_exception_type(Exception)
 )
-def run_chain_with_retry(chain, message):
-    return chain.invoke(message)
+def run_chain_with_retry(chain, input_data, config):
+    return chain.invoke(input_data, config=config)

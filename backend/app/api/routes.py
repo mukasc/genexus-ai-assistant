@@ -98,19 +98,17 @@ async def chat(request: Request, req: ChatRequest):
     if not rag.rag_chain: rag.initialize_rag_system()
     if not rag.rag_chain: return ChatResponse(response="", context_used=False, error="System not ready")
     try:
-        # 1. Log Configurações
-        llm_conf = APP_CONFIG.get('llm', {})
-        logger.info("Chat Configuration", extra={
-            "model_name": llm_conf.get('model_name'),
-            "temperature": llm_conf.get('temperature'),
-            "system_prompt": llm_conf.get('system_prompt')
-        })
-
-        # 2. Log Prompt
-        logger.info(f"Prompt Enviado: {req.message}", extra={"prompt": req.message})
+        # Usa o session_id enviado ou cria um padrão
+        session_id = req.session_id or "default_session"             
+        logger.info(f"Chat Request [{session_id}]", extra={"prompt": req.message, "session_id": session_id})
         
-        # 3. Execução
-        result = rag.run_chain_with_retry(rag.rag_chain, req.message)
+        # Passa o session_id na configuração da execução
+        # input_data agora é um dict: {"question": ...}
+        result = rag.run_chain_with_retry(
+            rag.rag_chain, 
+            {"question": req.message}, 
+            config={"configurable": {"session_id": session_id}}
+        )
         
         # Separa a resposta de texto
         answer_text = result.get("response", "")
