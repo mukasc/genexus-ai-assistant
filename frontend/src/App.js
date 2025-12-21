@@ -3,6 +3,7 @@ import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import Toast from './Toast';
 import LogsViewer from './LogsViewer';
+import KnowledgeManager from './KnowledgeManager';
 import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
@@ -40,6 +41,7 @@ function App() {
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [retryTimer, setRetryTimer] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
+  const [showManager, setShowManager] = useState(false);
 
   // --- SESSION ID (PERSISTENTE) ---
   // Tenta pegar do localStorage, se não existir cria um e salva
@@ -438,6 +440,7 @@ function App() {
               {indexStatus.collection_name && 
                 <p className="option-desc">Collection: {indexStatus.collection_name}</p>
               }
+              <button onClick={() => setShowManager(true)} className="manage-link">Manage Files ⚙️</button>
             </div>
           )}
 
@@ -590,6 +593,7 @@ function App() {
 
       {toast && <Toast message={toast.message} type={toast.type} duration={toast.duration} onClose={closeToast} />}
       {showLogs && <LogsViewer onClose={() => setShowLogs(false)} />}
+      {showManager && <KnowledgeManager onClose={() => { setShowManager(false); checkIndexStatus(); }} backendUrl={BACKEND_URL} />}
     </div>
   );
 }
