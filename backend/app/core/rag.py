@@ -9,8 +9,8 @@ from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from langchain_core.runnables import RunnablePassthrough, RunnableParallel
-from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
+from langchain_core.output_parsers import StrOutputParser, CommaSeparatedListOutputParser
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.config import APP_CONFIG, API_KEY, ROOT_DIR
@@ -94,6 +94,11 @@ def initialize_rag_system():
         k_docs = retrieval_conf.get('k', 4)
         score_thresh = retrieval_conf.get('score_threshold', 0.8) # Mantendo o filtro alto
 
+        # Configuração de Expansão
+        expansion_conf = retrieval_conf.get('query_expansion', {})
+        use_expansion = expansion_conf.get('enabled', False)
+        expansion_count = expansion_conf.get('count', 3)
+
         logger.info(f"Configurando Retriever: k={k_docs}, threshold={score_thresh}")
 
         # Usa 'similarity_score_threshold' para filtrar lixo
@@ -119,6 +124,63 @@ def initialize_rag_system():
             transport="rest"
         )
         
+              # --- LÓGICA DE RETRIEVAL (COM PROTEÇÃO) ---
+        retriever_chain = None
+        
+        if use_expansion:
+            try:
+                # 1. Chain para gerar variações da pergunta
+                logger.info("🚀 Configurando Query Expansion...")
+                expansion_prompt = ChatPromptTemplate.from_template(
+                    "You are an AI assistant. Generate {count} different versions of the user question to retrieve relevant documents from a vector database.\n"
+                    "Focus on generating alternative keywords and phrasings.\n"
+                    "Return ONLY the questions separated by newlines.\n"
+                    "Original question: {question}"
+                )
+                
+                generate_queries = (
+                    expansion_prompt 
+                    | llm 
+                    | StrOutputParser() 
+                    | (lambda x: x.split("\n"))
+                )
+
+                # 2. Função que executa a busca para cada variação e unifica
+                def expanded_retrieval(input_dict):
+                    question = input_dict["question"]
+                    
+                    # Gera variações
+                    queries = generate_queries.invoke({"question": question, "count": expansion_count})
+                    # Adiciona a pergunta original na lista
+                    queries = [question] + [q.strip() for q in queries if q.strip()]
+                    
+                    logger.info(f"Searching for: {queries}")
+                    
+                    # Busca documentos para todas as queries
+                    all_docs = []
+                    for q in queries:
+                        docs = retriever.invoke(q)
+                        all_docs.extend(docs)
+                    
+                    # Remove duplicatas (baseado no conteúdo da página)
+                    unique_docs = []
+                    seen_content = set()
+                    for doc in all_docs:
+                        if doc.page_content not in seen_content:
+                            seen_content.add(doc.page_content)
+                            unique_docs.append(doc)
+                    
+                    return unique_docs[:k_docs*2] # Retorna um pouco mais de docs pois expandimos
+
+                retriever_chain = RunnableLambda(expanded_retrieval)
+            except Exception as exp_error:
+                logger.error(f"⚠️ Erro ao configurar Query Expansion: {exp_error}. Revertendo para modo padrão.")
+                retriever_chain = None # Força fallback
+
+        # Fallback se expansão estiver desligada OU falhar na configuração
+        if not retriever_chain:
+            retriever_chain = itemgetter("question") | retriever
+
         # --- NOVO PROMPT TEMPLATE COM HISTÓRICO ---
         # Substituímos from_template por from_messages para injetar o histórico corretamente
         prompt = ChatPromptTemplate.from_messages([
@@ -143,7 +205,7 @@ def initialize_rag_system():
         chain_with_docs = (
             RunnableParallel({
                 # Recupera docs usando apenas a pergunta atual
-                "docs": itemgetter("question") | retriever,
+                "docs": retriever_chain, # Usa a lógica definida acima
                 "question": itemgetter("question"),
                 "chat_history": itemgetter("chat_history")
             })
@@ -164,6 +226,7 @@ def initialize_rag_system():
             output_messages_key="response"
         )
         
+        mode_msg = "with Query Expansion" if use_expansion and retriever_chain else "Standard Mode"
         return {"success": True, "message": f"Initialized '{APP_CONFIG.get('identity', {}).get('app_name')}' with Memory & Sources"}
     except Exception as e:
         logger.error(f"RAG Init Error: {e}", exc_info=True)

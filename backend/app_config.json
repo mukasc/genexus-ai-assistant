@@ -14,7 +14,11 @@
   },
   "retrieval": {
     "score_threshold": 0.8,
-    "k": 4
+    "k": 4,
+    "query_expansion": {
+      "enabled": false,
+      "count": 3
+    }
   },
   "storage": {
     "collection_name": "langchain",
