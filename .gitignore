@@ -76,3 +76,7 @@ test_*.py
 *.env
 *.env.*
 -e 
+-e 
+# Environment files
+*.env
+*.env.*
