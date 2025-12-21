@@ -2,6 +2,7 @@ import os
 import json
 import shutil
 import tempfile
+import asyncio
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
@@ -10,6 +11,7 @@ from tenacity import RetryError
 
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.messages import HumanMessage, AIMessage
 
 from app.config import APP_CONFIG, DEFAULT_CONFIG, API_KEY
 from app.logging_config import logger, CURRENT_LOG_FILE
@@ -93,6 +95,29 @@ async def index_status():
     except Exception as e: 
         return IndexStatusResponse(exists=False, document_count=0, collection_name="error", message=str(e))
 
+# --- NOVO ENDPOINT: RECUPERAR HISTÓRICO ---
+@router.get("/chat/history/{session_id}")
+async def get_chat_history(session_id: str):                                                                                                                                                 
+    try:
+        # Usa a função do rag.py para pegar o objeto de histórico correto
+        history_obj = rag.get_session_history(session_id)
+        messages = history_obj.messages
+        
+        # Formata para o Frontend
+        formatted_history = []
+        for msg in messages:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            formatted_history.append({
+                "role": role,
+                "content": msg.content,
+                "timestamp": datetime.now().isoformat() # Data aproximada pois o FileHistory simples não salva timestamp por msg
+            })
+        return {"history": formatted_history}
+    except Exception as e:
+        logger.error(f"Error fetching history: {e}")
+        return {"history": []}
+
+# --- ROTA POST /chat (LEGADO/FALLBACK) ---
 @router.post("/chat", response_model=ChatResponse)
 @limiter.limit("10/minute")
 async def chat(request: Request, req: ChatRequest):

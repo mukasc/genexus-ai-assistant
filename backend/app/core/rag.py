@@ -4,7 +4,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_community.vectorstores import Chroma
 
 # Imports para Memória (NOVO)
-from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -21,16 +21,26 @@ from app.core.embeddings import OptimizedEmbeddings
 rag_chain = None
 vectorstore_instance = None 
 
-# --- MEMÓRIA EM RAM (NOVO) ---
-# Dicionário para guardar histórico: { "session_id": ChatMessageHistory() }
-# Em produção real, isso poderia ser substituído por Redis
-session_store = {}
-
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    if session_id not in session_store:
-        session_store[session_id] = ChatMessageHistory()
-    return session_store[session_id]
-# -----------------------------
+    """
+    Retorna o histórico de chat salvo em arquivo JSON.
+    Caminho: /data/sessions/{session_id}.json
+    """
+    # Define o diretório de sessões
+    sessions_dir = os.path.join(ROOT_DIR, "data", "sessions")
+    
+    # Garante que a pasta existe
+    if not os.path.exists(sessions_dir):
+        try:
+            os.makedirs(sessions_dir)
+        except Exception as e:
+            logger.error(f"Erro ao criar pasta de sessões: {e}")
+    
+    # Define o caminho do arquivo para esta sessão específica
+    file_path = os.path.join(sessions_dir, f"{session_id}.json")
+    
+    # O FileChatMessageHistory gerencia leitura/escrita automaticamente
+    return FileChatMessageHistory(file_path)
 
 def get_optimized_embeddings():
     if not API_KEY: raise ValueError("GEMINI_API_KEY missing")

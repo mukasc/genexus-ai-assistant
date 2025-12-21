@@ -41,9 +41,15 @@ function App() {
   const [retryTimer, setRetryTimer] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
 
-  // --- SESSION ID (MEMÓRIA) ---
-  // Gera um ID único quando a página carrega e mantém durante a sessão
-  const [sessionId] = useState(generateUUID());
+  // --- SESSION ID (PERSISTENTE) ---
+  // Tenta pegar do localStorage, se não existir cria um e salva
+  const [sessionId, setSessionId] = useState(() => {
+    const saved = localStorage.getItem('chat_session_id');
+    if (saved) return saved;
+    const newId = generateUUID();
+    localStorage.setItem('chat_session_id', newId);
+    return newId;
+  });
   
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -64,6 +70,7 @@ function App() {
         setConfig(newConfig);
         applyTheme(newConfig);
         document.title = newConfig.app_name;
+        fetchHistory(sessionId);
         
       } catch (error) {
         console.error("Erro fatal ao carregar config:", error);
@@ -89,6 +96,18 @@ function App() {
     checkSystemHealth();
     checkIndexStatus();
   }, [sessionId]); // Adicionado sessionId como dependência para garantir que loga o valor correto
+
+  const fetchHistory = async (sid) => {
+    try {
+        const res = await axios.get(`${BACKEND_URL}/api/chat/history/${sid}`);
+        if (res.data.history && res.data.history.length > 0) {
+            setMessages(res.data.history);
+            showToast("Chat history restored", "success", 2000);
+        }
+    } catch (error) {
+        console.error("Failed to load history", error);
+    }
+  };
 
   const applyTheme = (themeConfig) => {
     const root = document.documentElement;
@@ -158,6 +177,15 @@ function App() {
   const handleCopySessionId = () => {
     navigator.clipboard.writeText(sessionId);
     showToast("Session ID copied to clipboard! 📋", "success", 2000);
+  };
+
+  // Função para criar nova sessão (Limpar memória real)
+  const handleNewSession = () => {
+    const newId = generateUUID();
+    setSessionId(newId);
+    localStorage.setItem('chat_session_id', newId);
+    setMessages([]); // Limpa a tela
+    showToast("Started new conversation context", "info");         
   };
 
   // --- FUNÇÃO DE FEEDBACK ---
@@ -464,6 +492,7 @@ function App() {
               📊 System Logs
             </button>
           </div>
+          <button onClick={handleNewSession} className="clear-button">✨ New Chat</button>
 
           {messages.length > 0 && <button onClick={() => setMessages([])} className="clear-button">🗑️ Clear Chat</button>}
         </div>
