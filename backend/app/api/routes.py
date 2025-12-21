@@ -5,6 +5,7 @@ import tempfile
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import StreamingResponse
 from tenacity import RetryError
 
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
@@ -151,6 +152,52 @@ async def chat(request: Request, req: ChatRequest):
             )
             
         return ChatResponse(response="", context_used=False, error=f"Erro no sistema: {str(real_error)[:100]}...", retry_after=10)
+
+@router.post("/chat/stream")
+@limiter.limit("10/minute")
+async def chat_stream(request: Request, req: ChatRequest):
+    if not rag.rag_chain: rag.initialize_rag_system()
+    
+    if not rag.rag_chain:
+        # Retorna erro JSON padrão se não estiver pronto
+        return ChatResponse(response="", context_used=False, error="System not ready")
+
+    session_id = req.session_id or "default_session"
+    logger.info(f"Stream Request [{session_id}]", extra={"prompt": req.message})
+
+    async def event_generator():
+        try:
+            # Usa .astream do LangChain
+            # O input deve ser um dict conforme definido no rag.py
+            async for chunk in rag.rag_chain.astream(
+                {"question": req.message},
+                config={"configurable": {"session_id": session_id}}
+            ):
+                # O chunk é um pedaço do dicionário final: {'response': 'texto', 'sources': [...]}
+                
+                # 1. Se vier um pedaço de texto da resposta
+                if "response" in chunk and chunk["response"]:
+                    # Envia JSON linha a linha
+                    data = json.dumps({"type": "token", "content": chunk["response"]})
+                    yield data + "\n"
+                
+                # 2. Se vierem as fontes (geralmente no final ou começo, depende do paralelismo)
+                if "sources" in chunk and chunk["sources"]:
+                    unique_sources = set()
+                    for doc in chunk["sources"]:
+                        src = doc.metadata.get("source", "Desconhecido")
+                        unique_sources.add(os.path.basename(src))
+                    
+                    if unique_sources:
+                        data = json.dumps({"type": "sources", "content": list(unique_sources)})
+                        yield data + "\n"
+
+        except Exception as e:
+            logger.error(f"Stream Error: {e}")
+            # Envia erro para o front saber
+            yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
 @router.post("/ingest-pdf", response_model=IngestionResponse)
 @limiter.limit("5/minute") # <--- Limite mais estrito para upload

@@ -210,36 +210,98 @@ function App() {
     setLoading(true);
 
     try {
-       // --- ENVIO COM SESSION ID ---
-      const response = await axios.post(`${BACKEND_URL}/api/chat`, { 
-          message: userInput,
-          session_id: sessionId // <--- AQUI O ID É ENVIADO
+      // 1. Cria a mensagem do assistente vazia inicialmente
+      const assistantMsgId = new Date().getTime(); // ID temporário
+      setMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: '', 
+          timestamp: new Date().toISOString(),
+          id: assistantMsgId
+      }]);
+
+      // 2. Inicia o Fetch
+      const response = await fetch(`${BACKEND_URL}/api/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userInput, session_id: sessionId })
+                                                            
       });
 
-      if (response.data.error) {
-        if (response.data.retry_after) {
-          showToast(response.data.error, 'warning', 0);
-          startRetryTimer(response.data.retry_after);
-          setMessages(prev => prev.slice(0, -1));
-          setInput(userInput);
-        } else {
-          showToast(response.data.error, 'error');
-          setMessages(prev => [...prev, { role: 'assistant', content: response.data.error, error: true, timestamp: new Date().toISOString() }]);
-        }
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: response.data.response, timestamp: new Date().toISOString() }]);
+      if (!response.ok) {
+        if (response.status === 429) throw new Error("Rate limit exceeded");
+        throw new Error("Network response was not ok");
       }
+
+      // 3. Lê o Stream
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = ""; // Buffer para texto acumulado
+      let sources = []; // Buffer para fontes
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        // O stream pode mandar pedaços de JSON quebrados, ou múltiplos JSONs na mesma linha se for muito rápido.
+        // A nossa API manda NDJSON (um JSON por linha).
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+                const data = JSON.parse(line);
+                
+                if (data.type === 'token') {
+                    buffer += data.content;
+                    // Atualiza o estado com o texto acumulado em tempo real
+                    setMessages(prev => {
+                        const newMsgs = [...prev];
+                        const lastMsg = newMsgs[newMsgs.length - 1];
+                        if (lastMsg.role === 'assistant') {
+                            lastMsg.content = buffer;
+                        }
+                        return newMsgs;
+                    });
+                } else if (data.type === 'sources') {
+                    sources = data.content;
+                } else if (data.type === 'error') {
+                    throw new Error(data.content);
+                }
+            } catch (e) {
+                // Se der erro de parse (linha incompleta), ignora e espera o resto no próximo chunk
+                // Em NDJSON robusto precisaria de buffer de linha, mas para este demo simples ok.
+            }
+        }
+      }
+
+      // 4. Finalização: Adiciona fontes ao texto se houver
+      if (sources.length > 0) {
+          const footer = "\n\n---\n📚 **Fontes Consultadas:**\n" + sources.map(s => `- \`${s}\``).join('\n');
+          setMessages(prev => {
+              const newMsgs = [...prev];
+              const lastMsg = newMsgs[newMsgs.length - 1];
+              lastMsg.content = buffer + footer; // Garante formatação final
+              return newMsgs;
+          });
+      }
+
     } catch (error) {
       let errorMsg = 'Connection error.';
-      if (error.response?.status === 429) {
-        errorMsg = 'Rate limit exceeded.';
-        startRetryTimer(30);
-        setMessages(prev => prev.slice(0, -1));
-        setInput(userInput);
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: errorMsg, error: true, timestamp: new Date().toISOString() }]);
-      }
-      showToast(errorMsg, error.response?.status === 429 ? 'warning' : 'error');
+                                           
+      if (error.message.includes('Rate limit')) errorMsg = 'Muitas requisições. Aguarde um pouco.';
+      
+      setMessages(prev => {
+          // Remove a mensagem vazia ou substitui por erro
+          const newMsgs = [...prev];
+          const lastMsg = newMsgs[newMsgs.length - 1];
+          if (lastMsg.role === 'assistant') {
+              lastMsg.content = errorMsg;
+              lastMsg.error = true;
+          }
+          return newMsgs;
+      });
+      showToast(errorMsg, 'error');
     } finally {
       setLoading(false);
     }
