@@ -1,4 +1,4 @@
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 def test_chat_flow_mocked(client):
     """
@@ -16,9 +16,15 @@ def test_chat_flow_mocked(client):
     }
 
     # 2. Patching (Substituição temporária das funções reais)
-    # Substituímos a função que executa a Chain e a verificação de inicialização
-    with patch("app.api.routes.rag.run_chain_with_retry", return_value=mock_rag_response) as mock_run:
-        with patch("app.api.routes.rag.rag_chain", MagicMock()): # Finge que o RAG está inicializado
+    # ATENÇÃO: Agora usamos 'run_chain_with_fallback' e 'new_callable=AsyncMock'
+    # porque a função original é 'async def'.
+    with patch("app.api.routes.rag.run_chain_with_fallback", new_callable=AsyncMock) as mock_run:
+        
+        # Configura o retorno do mock assíncrono
+        mock_run.return_value = mock_rag_response
+        
+        # Finge que o RAG está inicializado para não tentar conectar no ChromaDB real
+        with patch("app.api.routes.rag.rag_chain", MagicMock()): 
             
             # 3. Executa a requisição real para a API
             payload = {"message": "Teste de conexão", "session_id": "sessao-teste-123"}
@@ -30,8 +36,11 @@ def test_chat_flow_mocked(client):
             
             # Verifica se a resposta veio do nosso Mock
             assert "Esta é uma resposta simulada" in data["response"]
+            
             # Verifica se a formatação de fontes aconteceu (lógica do routes.py)
+            # O código deve limpar o caminho e mostrar só o nome do arquivo
             assert "manual_teste.pdf" in data["response"]
+            
             assert data["context_used"] is True
 
 def test_chat_validation_error(client):

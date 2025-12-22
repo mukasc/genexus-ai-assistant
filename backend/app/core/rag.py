@@ -1,17 +1,18 @@
 import os
+import time
 from operator import itemgetter
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
-# Imports para Memória (NOVO)
+# Imports para Memória
 from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel, RunnableLambda
-from langchain_core.output_parsers import StrOutputParser, CommaSeparatedListOutputParser
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from langchain_core.output_parsers import StrOutputParser
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, RetryError
 
 from app.config import APP_CONFIG, API_KEY, ROOT_DIR
 from app.logging_config import logger
@@ -21,25 +22,66 @@ from app.core.embeddings import OptimizedEmbeddings
 rag_chain = None
 vectorstore_instance = None 
 
+# --- CONTROLE DE ROTAÇÃO DE MODELOS ---
+current_model_index = 0
+
+def get_current_model_name():
+    """Retorna o nome do modelo atual baseado no índice de rotação."""
+    llm_conf = APP_CONFIG.get('llm', {})
+    fallback_list = llm_conf.get('fallback_order', [])
+    
+    # Se não tiver lista, usa o único definido
+    if not fallback_list:
+        return llm_conf.get('model_name', 'gemini-1.5-flash')
+    
+    # Garante que o índice está dentro dos limites
+    safe_index = current_model_index % len(fallback_list)
+    return fallback_list[safe_index]
+
+def switch_to_next_model():
+    """Avança para o próximo modelo da lista e reinicia o RAG."""
+    global current_model_index, rag_chain
+    
+    llm_conf = APP_CONFIG.get('llm', {})
+    fallback_list = llm_conf.get('fallback_order', [])
+    
+    if not fallback_list or len(fallback_list) <= 1:
+        logger.warning("Tentativa de Fallback, mas não há lista de modelos alternativos configurada.")
+        return False
+
+    # Avança o índice
+    old_model = fallback_list[current_model_index % len(fallback_list)]
+    current_model_index = (current_model_index + 1) % len(fallback_list)
+    new_model = fallback_list[current_model_index]
+    
+    logger.warning(f"⚠️ ROTAÇÃO DE MODELO: {old_model} falhou (Cota/Erro). Alternando para -> {new_model}")
+    
+    # Força reinicialização
+    rag_chain = None
+    initialize_rag_system()
+    return True
+# --------------------------------------
+
+# --- MEMÓRIA EM ARQUIVO ---
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
-    """
-    Retorna o histórico de chat salvo em arquivo JSON.
-    Caminho: /data/sessions/{session_id}.json
-    """
-    # Define o diretório de sessões
+       
+                                                       
+                                             
+       
+                                     
     sessions_dir = os.path.join(ROOT_DIR, "data", "sessions")
     
-    # Garante que a pasta existe
+                                
     if not os.path.exists(sessions_dir):
-        try:
-            os.makedirs(sessions_dir)
-        except Exception as e:
-            logger.error(f"Erro ao criar pasta de sessões: {e}")
+            
+        try: os.makedirs(sessions_dir)
+        except: pass
+                                                                 
     
-    # Define o caminho do arquivo para esta sessão específica
+                                                               
     file_path = os.path.join(sessions_dir, f"{session_id}.json")
     
-    # O FileChatMessageHistory gerencia leitura/escrita automaticamente
+                                                                       
     return FileChatMessageHistory(file_path)
 
 def get_optimized_embeddings():
@@ -53,34 +95,34 @@ def get_optimized_embeddings():
     return OptimizedEmbeddings(base, use_cache=True, batch_size=10, delay=2.0)
 
 def get_vectorstore():
-    """
-    Retorna a instância do ChromaDB (Local).
-    """
+       
+                                             
+       
     embeddings = get_optimized_embeddings()
     
-    # 1. Definição do Caminho
+                               
     env_path = os.getenv('CHROMA_DB_PATH')
     json_path = APP_CONFIG.get('storage', {}).get('persist_directory', 'data/chroma_db')
     
-    # Prioriza .env > json > default
+                                    
     p_dir = env_path if env_path else json_path
     
-    # Garante caminho absoluto a partir da raiz
+                                               
     if not os.path.isabs(p_dir):
         abs_dir = os.path.join(ROOT_DIR, p_dir)
     else:
         abs_dir = p_dir
         
-    # 2. Nome da Coleção
+                          
     coll_name = APP_CONFIG.get('storage', {}).get('collection_name', 'default_collection')
     
     logger.info(f"Carregando ChromaDB em: {abs_dir}")
-    
-    return Chroma(
-        collection_name=coll_name, 
-        persist_directory=abs_dir, 
-        embedding_function=embeddings
-    )
+    return Chroma(collection_name=coll_name, persist_directory=abs_dir, embedding_function=embeddings)
+                  
+                                   
+                                   
+                                     
+     
 
 def initialize_rag_system():
     global rag_chain, vectorstore_instance
@@ -89,135 +131,138 @@ def initialize_rag_system():
     try:
         vectorstore_instance = get_vectorstore()
         
-        # --- CONFIGURAÇÃO DE RETRIEVAL ---
+        # Retrieval Config
         retrieval_conf = APP_CONFIG.get('retrieval', {})
         k_docs = retrieval_conf.get('k', 4)
-        score_thresh = retrieval_conf.get('score_threshold', 0.8) # Mantendo o filtro alto
-
-        # Configuração de Expansão
+        score_thresh = retrieval_conf.get('score_threshold', 0.6)
+        
+        # Expansion Config
         expansion_conf = retrieval_conf.get('query_expansion', {})
         use_expansion = expansion_conf.get('enabled', False)
         expansion_count = expansion_conf.get('count', 3)
 
-        logger.info(f"Configurando Retriever: k={k_docs}, threshold={score_thresh}")
+        logger.info(f"Retriever: k={k_docs}, threshold={score_thresh}")
 
-        # Usa 'similarity_score_threshold' para filtrar lixo
-        retriever = vectorstore_instance.as_retriever(
+                                                            
+        base_retriever = vectorstore_instance.as_retriever(
             search_type="similarity_score_threshold",
-            search_kwargs={
-                "score_threshold": score_thresh,
-                "k": k_docs
-            }
+                           
+            search_kwargs={"score_threshold": score_thresh, "k": k_docs}
+                           
+             
         )
         
-        # Configs do JSON
-        model_name = APP_CONFIG.get('llm', {}).get('model_name', 'gemini-1.5-flash')
+        # --- LLM SELECTION (DINÂMICO) ---
+        model_name = get_current_model_name()
         temp = APP_CONFIG.get('llm', {}).get('temperature', 0.1)
-        # Pega o System Prompt do JSON
+                                      
         sys_instructions = APP_CONFIG.get('llm', {}).get('system_prompt', "You are a helpful assistant.")
         
+        logger.info(f"Inicializando LLM com modelo ATIVO: {model_name}")
+
         llm = ChatGoogleGenerativeAI(
             model=model_name, 
             temperature=temp, 
             google_api_key=API_KEY, 
-            max_retries=1, 
+            max_retries=1, # Deixa o retry externo lidar com a rotação
             transport="rest"
         )
-        
-              # --- LÓGICA DE RETRIEVAL (COM PROTEÇÃO) ---
+
+        # Retrieval Logic (Expansion or Standard)
         retriever_chain = None
         
         if use_expansion:
             try:
-                # 1. Chain para gerar variações da pergunta
-                logger.info("🚀 Configurando Query Expansion...")
+                                                             
+                                                                   
                 expansion_prompt = ChatPromptTemplate.from_template(
-                    "You are an AI assistant. Generate {count} different versions of the user question to retrieve relevant documents from a vector database.\n"
-                    "Focus on generating alternative keywords and phrasings.\n"
-                    "Return ONLY the questions separated by newlines.\n"
-                    "Original question: {question}"
-                )
+                    "Generate {count} different versions of the user question to retrieve relevant documents.\nOriginal: {question}"
+                                                                               
+                                                                        
+                                                   
+                 
                 
-                generate_queries = (
-                    expansion_prompt 
-                    | llm 
-                    | StrOutputParser() 
-                    | (lambda x: x.split("\n"))
+                                    
+                                     
+                          
+                                        
+                                               
                 )
+                generate_queries = (expansion_prompt | llm | StrOutputParser() | (lambda x: x.split("\n")))
 
-                # 2. Função que executa a busca para cada variação e unifica
+                                                                                
                 def expanded_retrieval(input_dict):
                     question = input_dict["question"]
                     
-                    # Gera variações
+                                      
                     queries = generate_queries.invoke({"question": question, "count": expansion_count})
-                    # Adiciona a pergunta original na lista
+                                                           
                     queries = [question] + [q.strip() for q in queries if q.strip()]
                     
-                    logger.info(f"Searching for: {queries}")
+                                                            
                     
-                    # Busca documentos para todas as queries
+                                                            
                     all_docs = []
                     for q in queries:
-                        docs = retriever.invoke(q)
-                        all_docs.extend(docs)
+                        all_docs.extend(base_retriever.invoke(q))
+                                             
                     
-                    # Remove duplicatas (baseado no conteúdo da página)
+                                                                         
                     unique_docs = []
-                    seen_content = set()
+                    seen = set()
                     for doc in all_docs:
-                        if doc.page_content not in seen_content:
-                            seen_content.add(doc.page_content)
+                        if doc.page_content not in seen:
+                            seen.add(doc.page_content)
                             unique_docs.append(doc)
                     
-                    return unique_docs[:k_docs*2] # Retorna um pouco mais de docs pois expandimos
+                    return unique_docs[:k_docs*2]
 
                 retriever_chain = RunnableLambda(expanded_retrieval)
-            except Exception as exp_error:
-                logger.error(f"⚠️ Erro ao configurar Query Expansion: {exp_error}. Revertendo para modo padrão.")
-                retriever_chain = None # Força fallback
+            except Exception as e:
+                logger.error(f"Expansion failed: {e}")
+                retriever_chain = None
 
-        # Fallback se expansão estiver desligada OU falhar na configuração
+                                                                             
         if not retriever_chain:
-            retriever_chain = itemgetter("question") | retriever
+            retriever_chain = itemgetter("question") | base_retriever
 
-        # --- NOVO PROMPT TEMPLATE COM HISTÓRICO ---
-        # Substituímos from_template por from_messages para injetar o histórico corretamente
+        # Prompt
+                                                                                              
         prompt = ChatPromptTemplate.from_messages([
             ("system", sys_instructions),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "Context:\n{context}\n\nQuestion: {question}")
         ])
         
-        # Função auxiliar para formatar texto
+                                               
         def format_docs_text(docs):
             if not docs:
-                # Se o filtro remover tudo, loga um aviso
-                logger.warning("Nenhum documento atingiu o score mínimo de relevância.", extra={"docs_found": False})
-                return "" # Retorna vazio, o Prompt deve lidar com isso ("I didn't find...")
+                                                         
+                logger.warning("Nenhum documento atingiu o score mínimo.")
+                return "" 
 
             content = "\n\n".join(d.page_content for d in docs)
-            logger.info(f"Retrieved {len(docs)} relevant docs", extra={"docs_found": True})
+                                                                                           
             return content
 
-        # Configuração da Chain Interna (Antes da Memória)
-        # Processa: {question, chat_history} -> {response, sources}
+                                                             
+                                                                   
         chain_with_docs = (
             RunnableParallel({
-                # Recupera docs usando apenas a pergunta atual
-                "docs": retriever_chain, # Usa a lógica definida acima
+                                                              
+                "docs": retriever_chain,
                 "question": itemgetter("question"),
                 "chat_history": itemgetter("chat_history")
             })
             .assign(context=lambda x: format_docs_text(x["docs"]))
             | {
                 "response": prompt | llm | StrOutputParser(),
-                "sources": itemgetter("docs") # Preserva os objetos Document
+                "sources": itemgetter("docs")
             }
         )
 
-        # --- APLICAÇÃO DA MEMÓRIA ---
-        # Envolve a chain básica com o gerenciador de histórico
+                                         
+                                                                 
         rag_chain = RunnableWithMessageHistory(
             chain_with_docs,
             get_session_history,
@@ -226,17 +271,41 @@ def initialize_rag_system():
             output_messages_key="response"
         )
         
-        mode_msg = "with Query Expansion" if use_expansion and retriever_chain else "Standard Mode"
-        return {"success": True, "message": f"Initialized '{APP_CONFIG.get('identity', {}).get('app_name')}' with Memory & Sources"}
+                                                                                                   
+        return {"success": True, "message": f"Initialized with {model_name}"}
     except Exception as e:
         logger.error(f"RAG Init Error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
-# Função de execução atualizada para aceitar config (onde vai o session_id)
-@retry(
-    stop=stop_after_attempt(3), 
-    wait=wait_exponential(multiplier=2, min=5, max=30), 
-    retry=retry_if_exception_type(Exception)
-)
-def run_chain_with_retry(chain, input_data, config):
-    return chain.invoke(input_data, config=config)
+# --- EXECUTOR COM LÓGICA DE FALLBACK ---
+async def run_chain_with_fallback(input_data, config, is_streaming=False):
+    """
+    Tenta executar a chain. Se der erro 429, troca de modelo e tenta de novo.
+    Tenta no máximo 3 modelos diferentes antes de desistir.
+    """
+    max_model_switches = 3
+    
+    for attempt in range(max_model_switches):
+        try:
+            if not rag_chain:
+                initialize_rag_system()
+                
+            if is_streaming:
+                # Para streaming, retornamos o gerador diretamente
+                # Se falhar durante o stream, o catch abaixo pega
+                return rag_chain.astream(input_data, config=config)
+            else:
+                # Execução normal
+                return await rag_chain.ainvoke(input_data, config=config)
+                
+        except Exception as e:
+            error_msg = str(e)
+            # Verifica se é erro de cota (429) ou Resource Exhausted
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                logger.error(f"🚨 Cota excedida no modelo atual. Tentativa {attempt+1}/{max_model_switches}")
+                if switch_to_next_model():
+                    time.sleep(1) # Pequena pausa para respirar
+                    continue # Tenta de novo com o novo modelo
+            
+            # Se não for erro de cota, ou se não tiver mais modelos, explode o erro
+            raise e

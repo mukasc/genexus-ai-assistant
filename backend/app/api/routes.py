@@ -153,96 +153,108 @@ async def get_chat_history(session_id: str):
         logger.error(f"Error fetching history: {e}")
         return {"history": []}
 
-# --- ROTA POST /chat (LEGADO/FALLBACK) ---
-@router.post("/chat", response_model=ChatResponse)
-@limiter.limit("10/minute")
-async def chat(request: Request, req: ChatRequest):
-    if not rag.rag_chain: rag.initialize_rag_system()
-    if not rag.rag_chain: return ChatResponse(response="", context_used=False, error="System not ready")
+class ProfileSwitchRequest(BaseModel):
+    profile_id: str
+
+@router.get("/config/profiles")
+async def get_available_profiles():
+    return {
+        "active": GLOBAL_STATE.get("active_profile"),
+        "profiles": list(GLOBAL_STATE.get("profiles", {}).keys())
+    }
+
+@router.post("/config/switch")
+async def switch_profile(req: ProfileSwitchRequest):
     try:
-        # Usa o session_id enviado ou cria um padrão
-        session_id = req.session_id or "default_session"             
-        logger.info(f"Chat Request [{session_id}]", extra={"prompt": req.message, "session_id": session_id})
-        
-        # Passa o session_id na configuração da execução
-        # input_data agora é um dict: {"question": ...}
-        result = rag.run_chain_with_retry(
-            rag.rag_chain, 
-            {"question": req.message}, 
-            config={"configurable": {"session_id": session_id}}
-        )
-        
-        # Separa a resposta de texto
-        answer_text = result.get("response", "")
-        source_docs = result.get("sources", [])
-        
-        # --- LÓGICA DE CITAÇÃO DE FONTES (REATIVADA) ---
-        unique_sources = set()
-        for doc in source_docs:
-            # Tenta pegar 'source' do metadata, ou usa 'Desconhecido'
-            src = doc.metadata.get("source", "Desconhecido")
-            # Limpa o caminho para ficar só o nome do arquivo (ex: 'manual.pdf')
-            filename = os.path.basename(src)
-            unique_sources.add(filename)
-            
-        # Adiciona o rodapé se houver fontes
-        if unique_sources:
-            # Formatamos como Markdown limpo com separador
-            footer = "\n\n---\n📚 **Fontes Consultadas:**\n" + "\n".join([f"- `{s}`" for s in unique_sources])
-            answer_text += footer
-            
-        # 4. Log Resposta e Fontes
-        logger.info(f"Resposta Gerada: {answer_text[:50]}...", extra={"response_content": answer_text, "sources": list(unique_sources)})
-        
-        return ChatResponse(response=answer_text, context_used=True)
-
+        if req.profile_id not in GLOBAL_STATE.get("profiles", {}):
+            raise HTTPException(status_code=400, detail="Profile not found")
+        save_active_profile(req.profile_id)
+        logger.info(f"Switched to profile: {req.profile_id}")
+        rag.rag_chain = None; rag.vectorstore_instance = None
+        result = rag.initialize_rag_system()
+        return {"status": "success", "message": f"Switched to {req.profile_id}", "rag_status": result}
     except Exception as e:
-        real_error = e
-        if isinstance(e, RetryError):
-            real_error = e.last_attempt.exception()
+        logger.error(f"Error switching profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-        error_msg = str(real_error)
-        logger.error(f"Chat Error Detalhado: {error_msg}", exc_info=True)
-        
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            return ChatResponse(
-                response="", 
-                context_used=False, 
-                error="⚠️ Limite de Cota do Google Atingido. Tente novamente em alguns segundos.", 
-                retry_after=60
-            )
-            
-        return ChatResponse(response="", context_used=False, error=f"Erro no sistema: {str(real_error)[:100]}...", retry_after=10)
+@router.get("/logs")
+async def get_logs(lines: int = 100, level: Optional[str] = None, search: Optional[str] = None, start_time: Optional[str] = None, end_time: Optional[str] = None):
+    if not os.path.exists(CURRENT_LOG_FILE): return {"logs": [], "error": "Log file missing", "source": CURRENT_LOG_FILE}
+    try:
+        filtered = []
+        with open(CURRENT_LOG_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                if not line.strip(): continue
+                try:
+                    entry = json.loads(line)
+                    filtered.append(entry)
+                except: pass
+        return {"logs": filtered[-lines:], "total_matches": len(filtered), "source": CURRENT_LOG_FILE}
+    except Exception as e: return {"logs": [], "error": str(e)}
 
+@router.get("/config")
+async def get_frontend_config(): return APP_CONFIG.get('identity', DEFAULT_CONFIG['identity'])
+
+@router.get("/health", response_model=HealthResponse)
+async def health(): return HealthResponse(status="healthy" if rag.rag_chain else "degraded", api_key_configured=bool(API_KEY), database_loaded=rag.rag_chain is not None, message="OK", app_name=APP_CONFIG.get('identity', {}).get('app_name', 'Unknown'))
+
+@router.get("/index-status", response_model=IndexStatusResponse)
+async def index_status():
+    try:
+        vs = rag.vectorstore_instance or rag.get_vectorstore()
+        coll_name = APP_CONFIG.get('storage',{}).get('collection_name')
+        if hasattr(vs, '_collection'): count = vs._collection.count()
+        else: count = 0
+        return IndexStatusResponse(exists=True, document_count=count, collection_name=coll_name, message="Loaded (ChromaDB)")
+    except Exception as e: return IndexStatusResponse(exists=False, document_count=0, collection_name="error", message=str(e))
+
+@router.get("/chat/history/{session_id}")
+async def get_chat_history(session_id: str):
+    try:
+        history_obj = rag.get_session_history(session_id)
+        messages = history_obj.messages
+        formatted_history = []
+        for msg in messages:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            formatted_history.append({"role": role, "content": msg.content, "timestamp": datetime.now().isoformat()})
+        return {"history": formatted_history}
+    except Exception as e: return {"history": []}
+
+# --- ROTA: CHAT STREAMING COM FALLBACK ---
 @router.post("/chat/stream")
 @limiter.limit("10/minute")
 async def chat_stream(request: Request, req: ChatRequest):
+    # Garantimos inicialização
     if not rag.rag_chain: rag.initialize_rag_system()
     
-    if not rag.rag_chain:
-        # Retorna erro JSON padrão se não estiver pronto
-        return ChatResponse(response="", context_used=False, error="System not ready")
-
     session_id = req.session_id or "default_session"
-    logger.info(f"Stream Request [{session_id}]", extra={"prompt": req.message})
+    
+    # 🔍 LOG ATUALIZADO: Captura o modelo ativo no momento da requisição
+    active_model = rag.get_current_model_name()
+    logger.info(f"Stream Request [{session_id}]", extra={
+        "prompt": req.message, 
+        "active_model": active_model, # <--- Saberemos exatamente qual modelo respondeu
+        "fallback_enabled": True
+    })
 
     async def event_generator():
         try:
-            # Usa .astream do LangChain
-            # O input deve ser um dict conforme definido no rag.py
-            async for chunk in rag.rag_chain.astream(
+            # Obtém o gerador (pode disparar troca de modelo se falhar na conexão inicial)
+            # is_streaming=True
+            stream_iterator = await rag.run_chain_with_fallback(
                 {"question": req.message},
-                config={"configurable": {"session_id": session_id}}
-            ):
-                # O chunk é um pedaço do dicionário final: {'response': 'texto', 'sources': [...]}
-                
-                # 1. Se vier um pedaço de texto da resposta
+                config={"configurable": {"session_id": session_id}},
+                is_streaming=True
+            )
+
+            # Itera sobre os chunks
+            # Nota: Se der erro 429 NO MEIO do stream, é difícil recuperar, 
+            # mas o fallback pega se der erro ANTES de começar (handshake).
+            async for chunk in stream_iterator:
                 if "response" in chunk and chunk["response"]:
-                    # Envia JSON linha a linha
                     data = json.dumps({"type": "token", "content": chunk["response"]})
                     yield data + "\n"
                 
-                # 2. Se vierem as fontes (geralmente no final ou começo, depende do paralelismo)
                 if "sources" in chunk and chunk["sources"]:
                     unique_sources = set()
                     for doc in chunk["sources"]:
@@ -254,14 +266,67 @@ async def chat_stream(request: Request, req: ChatRequest):
                         yield data + "\n"
 
         except Exception as e:
-            logger.error(f"Stream Error: {e}")
-            # Envia erro para o front saber
-            yield json.dumps({"type": "error", "content": str(e)}) + "\n"
+            # Se cair aqui, é porque falharam todas as tentativas
+            error_msg = str(e)
+            logger.error(f"Stream Error Final: {error_msg}")
+            
+            # Mensagem amigável se for cota
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                user_msg = "⚠️ Todos os modelos de IA estão ocupados/sem cota no momento. Tente mais tarde."
+            else:
+                user_msg = f"Erro no sistema: {error_msg[:100]}"
+                
+            yield json.dumps({"type": "error", "content": user_msg}) + "\n"
 
     return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
+# --- ROTA POST /chat (LEGADO) COM FALLBACK ---
+@router.post("/chat", response_model=ChatResponse)
+@limiter.limit("10/minute")
+async def chat(request: Request, req: ChatRequest):
+    if not rag.rag_chain: rag.initialize_rag_system()
+    try:
+        session_id = req.session_id or "default_session"
+
+        # 🔍 LOG ATUALIZADO
+        active_model = rag.get_current_model_name()
+        llm_conf = APP_CONFIG.get('llm', {})
+        
+        logger.info("Chat Request", extra={
+            "prompt": req.message,
+            "session_id": session_id,
+            "active_model": active_model,
+            "configured_primary": llm_conf.get('model_name')
+        })
+        
+        # Executa com fallback (modo não-streaming)
+        result = await rag.run_chain_with_fallback(
+            {"question": req.message}, 
+            config={"configurable": {"session_id": session_id}},
+            is_streaming=False
+        )
+        
+        answer_text = result.get("response", "")
+        source_docs = result.get("sources", [])
+        
+        unique_sources = set()
+        for doc in source_docs:
+            src = doc.metadata.get("source", "Desconhecido")
+            filename = os.path.basename(src)
+            unique_sources.add(filename)
+        
+        if unique_sources:
+            footer = "\n\n---\n📚 **Fontes Consultadas:**\n" + "\n".join([f"- `{s}`" for s in unique_sources])
+            answer_text += footer
+
+        return ChatResponse(response=answer_text, context_used=True)
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Chat Standard Error: {error_msg}")
+        return ChatResponse(response="", context_used=False, error="Erro ao processar (ver logs)")
+
 @router.post("/ingest-pdf", response_model=IngestionResponse)
-@limiter.limit("5/minute") # <--- Limite mais estrito para upload
+@limiter.limit("5/minute")
 async def ingest_pdf(request: Request, files: List[UploadFile] = File(...)):
     if not API_KEY: raise HTTPException(400, "No API Key")
     paths = []
@@ -274,17 +339,13 @@ async def ingest_pdf(request: Request, files: List[UploadFile] = File(...)):
                 paths.append(tmp.name)
             docs.extend(PyPDFLoader(paths[-1]).load())
         if not docs: return IngestionResponse(status="error", message="No PDFs")
-        
         c_size = APP_CONFIG.get('ingestion', {}).get('chunk_size', 1000)
         c_lap = APP_CONFIG.get('ingestion', {}).get('chunk_overlap', 200)
         chunks = RecursiveCharacterTextSplitter(chunk_size=c_size, chunk_overlap=c_lap).split_documents(docs)
-        
         rag.get_vectorstore().add_documents(chunks)
         rag.initialize_rag_system()
         return IngestionResponse(status="success", message=f"Ingested {len(files)} files")
-    except Exception as e:
-        logger.error(f"Ingest Error: {e}")
-        return IngestionResponse(status="error", message=str(e))
+    except Exception as e: return IngestionResponse(status="error", message=str(e))
     finally:
         for p in paths: 
             if os.path.exists(p): os.remove(p)
@@ -293,23 +354,13 @@ async def ingest_pdf(request: Request, files: List[UploadFile] = File(...)):
 @limiter.limit("5/minute")
 async def ingest_url(request: Request, url: str = Form(...)):
     try:
-        loader = WebBaseLoader(
-            web_path=url,
-            header_template={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-        )
+        loader = WebBaseLoader(web_path=url, header_template={"User-Agent": "Mozilla/5.0"})
         docs = loader.load()
-
-        if not docs or len(docs[0].page_content.strip()) < 50:
-            return IngestionResponse(status="error", message="Site retornou conteúdo vazio ou protegido (Pode exigir JavaScript).")
-
+        if not docs: return IngestionResponse(status="error", message="Conteúdo vazio.")
         c_size = APP_CONFIG.get('ingestion', {}).get('chunk_size', 1000)
         c_lap = APP_CONFIG.get('ingestion', {}).get('chunk_overlap', 200)
         chunks = RecursiveCharacterTextSplitter(chunk_size=c_size, chunk_overlap=c_lap).split_documents(docs)
         rag.get_vectorstore().add_documents(chunks)
         rag.initialize_rag_system()
-        return IngestionResponse(status="success", message=f"URL Ingested: {len(chunks)} chunks")
-    except Exception as e: 
-        logger.error(f"URL Ingest Error: {e}")
-        return IngestionResponse(status="error", message=f"Erro ao ler site: {str(e)}")
+        return IngestionResponse(status="success", message=f"URL Ingested")
+    except Exception as e: return IngestionResponse(status="error", message=f"Erro: {str(e)}")

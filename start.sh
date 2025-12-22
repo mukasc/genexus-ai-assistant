@@ -8,6 +8,10 @@ echo "  🚀 GeneXus AI Assistant - Enterprise Boot"
 echo "======================================================================"
 echo ""
 
+# --- CONFIGURAÇÃO GIT AUTOMÁTICA ---
+git config --system user.name "Murillo Petry"
+git config --system user.email "mukasc@gmail.com"
+
 # 1. Verificar Ambiente (Backend)
 if [ ! -f "backend/.env" ]; then
     echo "⚠️  backend/.env não encontrado."

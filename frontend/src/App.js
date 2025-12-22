@@ -16,6 +16,7 @@ const generateUUID = () => {
 };
 
 function App() {
+  // --- STATE INICIAL ---
   const [config, setConfig] = useState({
     app_name: "AI Assistant", 
     app_subtitle: "Connecting...",
@@ -42,22 +43,41 @@ function App() {
   const [showLogs, setShowLogs] = useState(false);
   const [showManager, setShowManager] = useState(false);
   
-  const [sessionId, setSessionId] = useState(() => {
-    const saved = localStorage.getItem('chat_session_id');
-    if (saved) return saved;
-    const newId = generateUUID();
-    localStorage.setItem('chat_session_id', newId);
-    return newId;
-  });
+  // CORREÇÃO: Inicia null para evitar carregar sessão "genérica" antes da hora
+  // O ID correto será definido assim que o perfil ativo for carregado
+  const [sessionId, setSessionId] = useState(null);
 
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const retryTimerRef = useRef(null);
 
+  // --- 1. EFEITO DE INICIALIZAÇÃO (Roda APENAS 1 vez) ---
   useEffect(() => {
-    console.log("🔍 Current Session ID:", sessionId);
+    console.log("🚀 App Mounted. Initializing...");
     fetchInitialData();
-  }, [sessionId]); 
+    // eslint-disable-next-line
+  }, []); 
+
+  // --- 2. GERENCIADOR DE PERFIL ---
+  // Quando o perfil muda, carregamos a sessão correspondente a ele
+  useEffect(() => {
+    if (activeProfile) {
+        console.log(`👤 Active Profile changed to: ${activeProfile}`);
+        loadSessionForProfile(activeProfile);
+    }
+  }, [activeProfile]);
+
+  // --- 3. GERENCIADOR DE HISTÓRICO ---
+  // Quando o ID da sessão muda, buscamos o histórico e atualizamos status
+  useEffect(() => {
+    if (sessionId) {
+        console.log(`🔄 Session ID changed to: ${sessionId}. Fetching history...`);
+        setMessages([]); // Limpa a tela antes de carregar o novo histórico
+        fetchHistory(sessionId);
+        checkSystemHealth();
+        checkIndexStatus();
+    }
+  }, [sessionId]);
 
   const fetchInitialData = async () => {
     try {
@@ -70,14 +90,11 @@ function App() {
         try {
             const profilesRes = await axios.get(`${BACKEND_URL}/api/config/profiles`);
             setProfiles(profilesRes.data.profiles || []);
+            // Define o perfil ativo (Isso dispara o useEffect[2])
             setActiveProfile(profilesRes.data.active || "");
         } catch (e) {
             console.warn("Endpoint de perfis não disponível:", e);
         }
-
-        fetchHistory(sessionId);
-        checkSystemHealth();
-        checkIndexStatus();
         
     } catch (error) {
         console.error("Erro fatal:", error);
@@ -100,18 +117,26 @@ function App() {
           savedId = generateUUID();
           localStorage.setItem(storageKey, savedId);
       }
+      // Só atualiza se for diferente para evitar loop
       setSessionId(prev => (prev !== savedId ? savedId : prev));
   };
 
   const handleProfileSwitch = async (e) => {
       const newProfile = e.target.value;
       if (!newProfile || newProfile === activeProfile) return;
+      
       try {
+          // 1. Feedback imediato
           setMessages([]);
+          
+          // 2. Avisa backend
           await axios.post(`${BACKEND_URL}/api/config/switch`, { profile_id: newProfile });
           showToast(`Switched to ${newProfile}`, "success");
+          
+          // 3. Atualiza state local (Isso dispara a cadeia de efeitos: useEffect[2] -> loadSession -> useEffect[3] -> fetchHistory)
           setActiveProfile(newProfile);
-          loadSessionForProfile(newProfile);
+          
+          // 4. Config visual
           const configRes = await axios.get(`${BACKEND_URL}/api/config`);
           setConfig(configRes.data);
           applyTheme(configRes.data);
@@ -192,16 +217,17 @@ function App() {
     showToast(`New conversation started for ${activeProfile}`, "info");         
   };
 
+  // --- FUNÇÃO: COPIAR MENSAGEM ---
   const handleCopyMessage = (text) => {
     navigator.clipboard.writeText(text);
-    showToast("Markdown copied!", "success", 2000);
+    showToast("Markdown copied to clipboard! 📋", "success", 2000);
   };
 
   const handleFeedback = async (index, score) => {
     const message = messages[index]; const prevMessage = messages[index - 1]; 
     if (!message || !prevMessage) return;
     const updatedMessages = [...messages]; updatedMessages[index] = { ...message, feedback: score }; setMessages(updatedMessages);
-    try { await axios.post(`${BACKEND_URL}/api/feedback/`, { user_question: prevMessage.content, bot_response: message.content, score: score, comment: "" }); if (score > 0) showToast("Thanks!", "success", 2000); else showToast("Noted.", "info", 2000); } 
+    try { await axios.post(`${BACKEND_URL}/api/feedback/`, { user_question: prevMessage.content, bot_response: message.content, score: score, comment: "" }); if (score > 0) showToast("Thanks for feedback! 👍", "success", 2000); else showToast("Thanks! We'll improve. 👎", "info", 2000); } 
     catch { showToast("Failed to send feedback", "error"); }
   };
 
@@ -350,7 +376,6 @@ function App() {
             <div className="index-section">
               <h3>📊 Knowledge Base</h3>
               <p className="index-count">{indexStatus.document_count} chunks</p>
-              {/* RESTAURAÇÃO: Exibe o nome da coleção (DB) se existir */}
               {indexStatus.collection_name && 
                 <p className="option-desc">Collection: {indexStatus.collection_name}</p>
               }
@@ -358,7 +383,6 @@ function App() {
             </div>
           )}
 
-          {/* RESTAURAÇÃO: A Seção INFO/About completa */}
           <div className="info-section">
             <h3>ℹ️ About</h3>
             <p className="info-text">
@@ -423,22 +447,23 @@ function App() {
                 <div className={`message message-${msg.role} ${msg.error ? 'message-error' : ''}`}>
                   <div className="message-icon">{msg.role === 'user' ? '👤' : msg.error ? '❌' : config.logo_emoji}</div>
                   <div className="message-content">
+                    {/* AQUI ESTÁ A MUDANÇA: COMPONENTE LIMPO */}
                     <div className="message-text">
                       <ReactMarkdown 
                         components={{         
                           a: ({node, ...props}) => <a {...props} target="_blank" rel="noopener noreferrer" />                                                                                                                                                                                                                           
                         }}>{msg.content}</ReactMarkdown>
                     </div>
-                    <div className="message-footer">
+                    {msg.role === 'assistant' && !msg.error && (
+                      <div className="message-footer">
                         <span className="message-time">{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                        {msg.role === 'assistant' && !msg.error && (
-                            <div className="feedback-actions">
-                                <button className="feedback-btn" onClick={() => handleCopyMessage(msg.content)} title="Copy Markdown">📋</button>
-                                <button className={`feedback-btn ${msg.feedback === 1 ? 'active-like' : ''}`} onClick={() => handleFeedback(index, 1)} disabled={msg.feedback !== undefined && msg.feedback !== null}>👍</button>
-                                <button className={`feedback-btn ${msg.feedback === -1 ? 'active-dislike' : ''}`} onClick={() => handleFeedback(index, -1)} disabled={msg.feedback !== undefined && msg.feedback !== null}>👎</button>
-                            </div>
-                        )}
-                    </div>
+                        <div className="feedback-actions">
+                          <button className="feedback-btn" onClick={() => handleCopyMessage(msg.content)} title="Copy Markdown">📋</button>
+                          <button className={`feedback-btn ${msg.feedback === 1 ? 'active-like' : ''}`} onClick={() => handleFeedback(index, 1)} disabled={msg.feedback !== undefined && msg.feedback !== null}>👍</button>
+                          <button className={`feedback-btn ${msg.feedback === -1 ? 'active-dislike' : ''}`} onClick={() => handleFeedback(index, -1)} disabled={msg.feedback !== undefined && msg.feedback !== null}>👎</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
