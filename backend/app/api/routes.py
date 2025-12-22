@@ -12,10 +12,11 @@ from pydantic import BaseModel
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader, YoutubeLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.messages import HumanMessage
+from langchain_core.documents import Document
 
 from app.config import APP_CONFIG, DEFAULT_CONFIG, API_KEY, GLOBAL_STATE, save_active_profile
 from app.logging_config import logger, CURRENT_LOG_FILE
-from app.schemas import ChatRequest, ChatResponse, IngestionResponse, HealthResponse, IndexStatusResponse
+from app.schemas import ChatRequest, ChatResponse, IngestionResponse, HealthResponse, IndexStatusResponse, TextIngestRequest
 from app.core import rag
 from app.core.limiter import limiter
 
@@ -241,6 +242,44 @@ async def chat(request: Request, req: ChatRequest):
         error_msg = str(e)
         logger.error(f"Chat Standard Error: {error_msg}")
         return ChatResponse(response="", context_used=False, error="Erro ao processar (ver logs)")
+
+@router.post("/ingest-text", response_model=IngestionResponse)
+@limiter.limit("5/minute")
+async def ingest_text(request: Request, body: TextIngestRequest):
+    """Recebe texto bruto, fragmenta e salva no banco vetorial."""
+    try:
+        if not body.text or len(body.text.strip()) < 10:
+             return IngestionResponse(status="error", message="Texto muito curto ou vazio.")
+
+        # Cria um Documento LangChain manual
+        doc = Document(
+            page_content=body.text,
+            metadata={
+                "source": f"[TEXT] {body.title}",
+                "title": body.title,
+                "created_at": datetime.now().isoformat()
+            }
+        )
+        
+        # Configuração de Chunking
+        c_size = APP_CONFIG.get('ingestion', {}).get('chunk_size', 1000)
+        c_lap = APP_CONFIG.get('ingestion', {}).get('chunk_overlap', 200)
+        
+        # Splitter
+        splitter = RecursiveCharacterTextSplitter(chunk_size=c_size, chunk_overlap=c_lap)
+        chunks = splitter.split_documents([doc])
+        
+        # Salva no Banco
+        rag.get_vectorstore().add_documents(chunks)
+        
+        # Reinicia sistema para pegar novos dados
+        rag.initialize_rag_system()
+        
+        return IngestionResponse(status="success", message=f"Text Ingested: {body.title} ({len(chunks)} chunks)")
+        
+    except Exception as e:
+        logger.error(f"Text Ingest Error: {e}")
+        return IngestionResponse(status="error", message=f"Erro ao processar texto: {str(e)}")
 
 @router.post("/ingest-pdf", response_model=IngestionResponse)
 @limiter.limit("5/minute")

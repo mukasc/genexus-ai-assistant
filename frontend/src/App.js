@@ -38,6 +38,12 @@ function App() {
   const [showUrlInput, setShowUrlInput] = useState(false);
   const [showYoutubeInput, setShowYoutubeInput] = useState(false);
   const [urlInput, setUrlInput] = useState('');
+
+  // --- NOVO STATE: TEXTO PURO ---
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [textTitle, setTextTitle] = useState('');
+  const [textContent, setTextContent] = useState('');
+
   const [toast, setToast] = useState(null);
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [retryTimer, setRetryTimer] = useState(0);
@@ -336,6 +342,40 @@ function App() {
     } catch (error) { showToast('Video Ingest failed. Check if video has subtitles.', 'error'); } finally { setIngesting(false); setIngestionMessage(''); setUrlInput(''); }
   };
 
+  // --- NOVA FUNÇÃO: INGESTÃO DE TEXTO ---
+  const handleTextIngestion = async () => {
+    if (!textTitle.trim() || !textContent.trim()) {
+        showToast("Please provide a title and content.", "warning");
+        return;
+    }
+    
+    setIngesting(true);
+    setShowTextInput(false);
+    setIngestionMessage(`Indexing text snippet...`);
+
+    try {
+      const response = await axios.post(`${BACKEND_URL}/api/ingest-text`, {
+          title: textTitle,
+          text: textContent
+      });
+      
+      if (response.data.status === 'success') {
+        showToast(response.data.message, 'success');
+        checkSystemHealth();
+        checkIndexStatus();
+      } else {
+        showToast(response.data.message, 'error');
+      }
+    } catch (error) {
+      showToast('Text Ingest failed.', 'error');
+    } finally {
+      setIngesting(false);
+      setIngestionMessage('');
+      setTextTitle('');
+      setTextContent('');
+    }
+  };
+
   return (
     <div className="app">
       <div className="sidebar">
@@ -417,6 +457,9 @@ function App() {
                 <button onClick={() => { setShowUrlInput(true); setShowIngestionMenu(false); }} className="ingestion-option">🌐 Website URL</button>
                 
                 <button onClick={() => { setShowYoutubeInput(true); setShowIngestionMenu(false); }} className="ingestion-option">📺 YouTube Video</button>
+
+                {/* BOTÃO NOVO */}
+                <button onClick={() => { setShowTextInput(true); setShowIngestionMenu(false); }} className="ingestion-option">📝 Raw Text / Code</button>
               </div>
             )}
 
@@ -436,6 +479,30 @@ function App() {
                 <div className="url-buttons">
                   <button onClick={handleYoutubeIngestion} className="url-button url-button-submit" style={{backgroundColor: '#FF0000'}}>Add Video</button>
                   <button onClick={() => setShowYoutubeInput(false)} className="url-button url-button-cancel">Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {/* INPUT DE TEXTO PURO (NOVO) */}
+            {showTextInput && !ingesting && (
+              <div className="url-input-container text-ingest-container">
+                <input 
+                    type="text" 
+                    value={textTitle} 
+                    onChange={(e) => setTextTitle(e.target.value)} 
+                    placeholder="Document Title (e.g. Snippet 1)" 
+                    className="url-input" 
+                />
+                <textarea 
+                    value={textContent}
+                    onChange={(e) => setTextContent(e.target.value)}
+                    placeholder="Paste your text or code here..."
+                    className="text-input-area"
+                    rows={5}
+                />
+                <div className="url-buttons">
+                  <button onClick={handleTextIngestion} className="url-button url-button-submit">Ingest Text</button>
+                  <button onClick={() => setShowTextInput(false)} className="url-button url-button-cancel">Cancel</button>
                 </div>
               </div>
             )}
