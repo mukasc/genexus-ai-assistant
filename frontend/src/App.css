@@ -679,3 +679,65 @@ body {
     background-color: #1e3a8a;
     color: white;
 }
+
+/* Doc Actions Group */
+.doc-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    opacity: 0.7;
+    transition: all 0.2s;
+}
+
+.icon-btn:hover { opacity: 1; background-color: #f3f4f6; }
+.preview-btn:hover { background-color: #e0f2fe; } /* Azulzinho */
+.delete-btn:hover { background-color: #fee2e2; } /* Vermelhinho */
+
+/* Preview Styles */
+.preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.back-btn {
+    background: none;
+    border: 1px solid #d1d5db;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.back-btn:hover { background-color: #f3f4f6; }
+
+.preview-text-box {
+    background-color: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 12px;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    color: #374151;
+    white-space: pre-wrap; /* Mantém quebras de linha */
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+
+.preview-note {
+    color: #9ca3af;
+    font-size: 11px;
+    font-style: italic;
+}
