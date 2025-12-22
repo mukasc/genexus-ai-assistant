@@ -27,6 +27,10 @@ share/python-wheels/
 *.egg
 PIPFILE.lock
 
+# Dependências Node.js (Frontend)
+frontend/node_modules/
+node_modules/
+
 # Virtual Environment
 venv/
 ENV/
@@ -38,6 +42,7 @@ chroma_db/
 *.chroma
 
 # Data
+data/
 data/chroma_db/
 data/logs/
 data/sessions/
@@ -61,6 +66,8 @@ processed_text/
 
 # Logs
 *.log
+backend/backend.out.log
+.DS_Store
 
 # Selenium
 chromedriver.exe
@@ -76,38 +83,7 @@ geckodriver
 *.env
 *.env.*
 -e 
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
--e 
-# Environment files
-*.env
-*.env.*
+
 -e 
 # Environment files
 *.env
