@@ -69,13 +69,17 @@ geckodriver.exe
 geckodriver
 
 # Test files
-test_*.py
-*_test.py-e 
+#test_*.py
+#*_test.py-e 
 
 # Environment files
 *.env
 *.env.*
 -e 
+-e 
+# Environment files
+*.env
+*.env.*
 -e 
 # Environment files
 *.env
