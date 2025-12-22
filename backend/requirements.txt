@@ -57,3 +57,8 @@ tenacity>=8.2.3
 pytest>=7.4.0
 httpx>=0.24.0
 pytest-asyncio>=0.21.0
+
+#YouTube Ingestion
+
+youtube-transcript-api>=0.6.0
+pytube>=15.0.0

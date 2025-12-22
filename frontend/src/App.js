@@ -36,6 +36,7 @@ function App() {
   const [ingestionMessage, setIngestionMessage] = useState('');
   const [showIngestionMenu, setShowIngestionMenu] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
+  const [showYoutubeInput, setShowYoutubeInput] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [toast, setToast] = useState(null);
   const [isRateLimited, setIsRateLimited] = useState(false);
@@ -44,7 +45,6 @@ function App() {
   const [showManager, setShowManager] = useState(false);
   
   // CORREÇÃO: Inicia null para evitar carregar sessão "genérica" antes da hora
-  // O ID correto será definido assim que o perfil ativo for carregado
   const [sessionId, setSessionId] = useState(null);
 
   const fileInputRef = useRef(null);
@@ -134,6 +134,7 @@ function App() {
           showToast(`Switched to ${newProfile}`, "success");
           
           // 3. Atualiza state local (Isso dispara a cadeia de efeitos: useEffect[2] -> loadSession -> useEffect[3] -> fetchHistory)
+          // CORREÇÃO: Removemos a chamada manual loadSessionForProfile daqui para não conflitar com o useEffect
           setActiveProfile(newProfile);
           
           // 4. Config visual
@@ -212,12 +213,12 @@ function App() {
   const handleNewSession = () => {
     const newId = generateUUID();
     setSessionId(newId);
+    // Salva na chave específica do perfil ATUAL
     localStorage.setItem(`chat_session_${activeProfile}`, newId);
     setMessages([]); 
     showToast(`New conversation started for ${activeProfile}`, "info");         
   };
 
-  // --- FUNÇÃO: COPIAR MENSAGEM ---
   const handleCopyMessage = (text) => {
     navigator.clipboard.writeText(text);
     showToast("Markdown copied to clipboard! 📋", "success", 2000);
@@ -325,6 +326,16 @@ function App() {
     } catch (error) { showToast('URL Ingest failed', 'error'); } finally { setIngesting(false); setIngestionMessage(''); setUrlInput(''); }
   };
 
+  const handleYoutubeIngestion = async () => {
+    if (!urlInput.trim()) return; 
+    setIngesting(true); setShowYoutubeInput(false); setIngestionMessage(`Transcribing Video...`);
+    try {
+      const formData = new FormData(); formData.append('url', urlInput);
+      const response = await axios.post(`${BACKEND_URL}/api/ingest-youtube`, formData);
+      if (response.data.status === 'success') { showToast(response.data.message, 'success'); checkSystemHealth(); checkIndexStatus(); } else { showToast(response.data.message, 'error'); }
+    } catch (error) { showToast('Video Ingest failed. Check if video has subtitles.', 'error'); } finally { setIngesting(false); setIngestionMessage(''); setUrlInput(''); }
+  };
+
   return (
     <div className="app">
       <div className="sidebar">
@@ -397,22 +408,38 @@ function App() {
 
           <div className="actions-section">
             <button onClick={() => setShowIngestionMenu(!showIngestionMenu)} className="action-button ingestion-button" disabled={ingesting}>📚 Add Knowledge</button>
+            
             {showIngestionMenu && !ingesting && (
               <div className="ingestion-menu">
-                <button onClick={() => fileInputRef.current?.click()} className="ingestion-option">📄 Upload PDF Files</button>
+                <button onClick={() => fileInputRef.current?.click()} className="ingestion-option">📄 PDF File</button>
                 <input ref={fileInputRef} type="file" accept=".pdf" multiple style={{ display: 'none' }} onChange={handleFileUpload} />
-                <button onClick={() => { setShowUrlInput(true); setShowIngestionMenu(false); }} className="ingestion-option">🌐 From URL</button>
+                
+                <button onClick={() => { setShowUrlInput(true); setShowIngestionMenu(false); }} className="ingestion-option">🌐 Website URL</button>
+                
+                <button onClick={() => { setShowYoutubeInput(true); setShowIngestionMenu(false); }} className="ingestion-option">📺 YouTube Video</button>
               </div>
             )}
+
             {showUrlInput && !ingesting && (
               <div className="url-input-container">
-                <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://..." className="url-input" />
+                <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://website.com..." className="url-input" />
                 <div className="url-buttons">
-                  <button onClick={handleUrlIngestion} className="url-button url-button-submit" disabled={!urlInput.trim()}>Add</button>
+                  <button onClick={handleUrlIngestion} className="url-button url-button-submit">Add Site</button>
                   <button onClick={() => setShowUrlInput(false)} className="url-button url-button-cancel">Cancel</button>
                 </div>
               </div>
             )}
+
+            {showYoutubeInput && !ingesting && (
+              <div className="url-input-container">
+                <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://youtube.com/watch?v=..." className="url-input" />
+                <div className="url-buttons">
+                  <button onClick={handleYoutubeIngestion} className="url-button url-button-submit" style={{backgroundColor: '#FF0000'}}>Add Video</button>
+                  <button onClick={() => setShowYoutubeInput(false)} className="url-button url-button-cancel">Cancel</button>
+                </div>
+              </div>
+            )}
+
             {ingestionMessage && <div className={`ingestion-status ${ingesting ? 'ingesting' : ''}`}>{ingestionMessage}</div>}
           </div>
 
@@ -447,7 +474,6 @@ function App() {
                 <div className={`message message-${msg.role} ${msg.error ? 'message-error' : ''}`}>
                   <div className="message-icon">{msg.role === 'user' ? '👤' : msg.error ? '❌' : config.logo_emoji}</div>
                   <div className="message-content">
-                    {/* AQUI ESTÁ A MUDANÇA: COMPONENTE LIMPO */}
                     <div className="message-text">
                       <ReactMarkdown 
                         components={{         
