@@ -642,3 +642,40 @@ body {
 
 .stats { font-size: 12px; color: #6b7280; font-weight: 500; }
 .empty-state { text-align: center; color: #9ca3af; padding: 40px 0; }
+
+/* Estilo do Seletor de Perfil */
+.profile-selector {
+    padding-bottom: 20px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+
+.profile-selector label {
+    display: block;
+    font-size: 12px;
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-bottom: 8px;
+    opacity: 0.7;
+}
+
+.profile-dropdown {
+    width: 100%;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background-color: rgba(0,0,0,0.2);
+    color: white;
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+}
+
+.profile-dropdown:hover {
+    background-color: rgba(0,0,0,0.3);
+}
+
+.profile-dropdown option {
+    background-color: #1e3a8a;
+    color: white;
+}

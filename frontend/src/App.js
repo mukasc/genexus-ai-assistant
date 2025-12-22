@@ -8,7 +8,6 @@ import './App.css';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8001';
 
-// Função auxiliar simples para gerar UUID
 const generateUUID = () => {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -17,15 +16,15 @@ const generateUUID = () => {
 };
 
 function App() {
-  // --- STATE INICIAL ---
   const [config, setConfig] = useState({
     app_name: "AI Assistant", 
-    app_subtitle: "Connecting to server...",
+    app_subtitle: "Connecting...",
     welcome_message: "Please wait...",
-    primary_color: "#333",
-    secondary_color: "#555",
-    logo_emoji: "⏳"
+    primary_color: "#333", secondary_color: "#555", logo_emoji: "⏳"
   });
+
+  const [profiles, setProfiles] = useState([]); 
+  const [activeProfile, setActiveProfile] = useState("");
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -42,9 +41,7 @@ function App() {
   const [retryTimer, setRetryTimer] = useState(0);
   const [showLogs, setShowLogs] = useState(false);
   const [showManager, setShowManager] = useState(false);
-
-  // --- SESSION ID (PERSISTENTE) ---
-  // Tenta pegar do localStorage, se não existir cria um e salva
+  
   const [sessionId, setSessionId] = useState(() => {
     const saved = localStorage.getItem('chat_session_id');
     if (saved) return saved;
@@ -52,52 +49,76 @@ function App() {
     localStorage.setItem('chat_session_id', newId);
     return newId;
   });
-  
+
   const fileInputRef = useRef(null);
   const messagesEndRef = useRef(null);
   const retryTimerRef = useRef(null);
 
-  // --- EFEITO INICIAL ROBUSTO ---
   useEffect(() => {
-    // LOG DE DEBUG PARA VERIFICAR A SESSÃO
     console.log("🔍 Current Session ID:", sessionId);
+    fetchInitialData();
+  }, [sessionId]); 
 
-    const fetchConfig = async () => {
-      try {
+  const fetchInitialData = async () => {
+    try {
         console.log(`Tentando conectar em: ${BACKEND_URL}/api/config`);
-        const response = await axios.get(`${BACKEND_URL}/api/config`);
-        
-        // SUCESSO: Usa config do backend
-        const newConfig = response.data;
-        setConfig(newConfig);
-        applyTheme(newConfig);
-        document.title = newConfig.app_name;
+        const configRes = await axios.get(`${BACKEND_URL}/api/config`);
+        setConfig(configRes.data);
+        applyTheme(configRes.data);
+        document.title = configRes.data.app_name;
+
+        try {
+            const profilesRes = await axios.get(`${BACKEND_URL}/api/config/profiles`);
+            setProfiles(profilesRes.data.profiles || []);
+            setActiveProfile(profilesRes.data.active || "");
+        } catch (e) {
+            console.warn("Endpoint de perfis não disponível:", e);
+        }
+
         fetchHistory(sessionId);
+        checkSystemHealth();
+        checkIndexStatus();
         
-      } catch (error) {
-        console.error("Erro fatal ao carregar config:", error);
-        
-        // FALHA: Usa Configuração de Fallback (Para a tela não travar)
+    } catch (error) {
+        console.error("Erro fatal:", error);
         const fallbackConfig = {
             app_name: "GeneXus AI (Offline)",
             app_subtitle: "Backend Connection Failed",
-            welcome_message: "⚠️ Could not connect to the backend server. Please check if main.py is running.",
-            primary_color: "#666666",
-            secondary_color: "#888888",
-            logo_emoji: "🔌"
+            welcome_message: "⚠️ Could not connect to backend.",
+            primary_color: "#666666", secondary_color: "#888888", logo_emoji: "🔌"
         };
-        
         setConfig(fallbackConfig);
         applyTheme(fallbackConfig);
-        
-        showToast(`Connection Error: ${error.message}. Is backend running on port 8001?`, "error");
-      }
-    };
+        showToast(`Connection Error: ${error.message}`, "error");
+    }
+  };
 
-    fetchConfig();
-    checkSystemHealth();
-    checkIndexStatus();
-  }, [sessionId]); // Adicionado sessionId como dependência para garantir que loga o valor correto
+  const loadSessionForProfile = (profileName) => {
+      const storageKey = `chat_session_${profileName}`;
+      let savedId = localStorage.getItem(storageKey);
+      if (!savedId) {
+          savedId = generateUUID();
+          localStorage.setItem(storageKey, savedId);
+      }
+      setSessionId(prev => (prev !== savedId ? savedId : prev));
+  };
+
+  const handleProfileSwitch = async (e) => {
+      const newProfile = e.target.value;
+      if (!newProfile || newProfile === activeProfile) return;
+      try {
+          setMessages([]);
+          await axios.post(`${BACKEND_URL}/api/config/switch`, { profile_id: newProfile });
+          showToast(`Switched to ${newProfile}`, "success");
+          setActiveProfile(newProfile);
+          loadSessionForProfile(newProfile);
+          const configRes = await axios.get(`${BACKEND_URL}/api/config`);
+          setConfig(configRes.data);
+          applyTheme(configRes.data);
+      } catch (err) {
+          showToast("Failed to switch profile", "error");
+      }
+  };
 
   const fetchHistory = async (sid) => {
     try {
@@ -113,32 +134,15 @@ function App() {
 
   const applyTheme = (themeConfig) => {
     const root = document.documentElement;
-    if (themeConfig.primary_color) {
-      root.style.setProperty('--primary-color', themeConfig.primary_color);
-    }
-    if (themeConfig.secondary_color) {
-      root.style.setProperty('--secondary-color', themeConfig.secondary_color);
-    }
+    if (themeConfig.primary_color) root.style.setProperty('--primary-color', themeConfig.primary_color);
+    if (themeConfig.secondary_color) root.style.setProperty('--secondary-color', themeConfig.secondary_color);
   };
 
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
   useEffect(() => { scrollToBottom(); }, [messages]);
   useEffect(() => { return () => { if (retryTimerRef.current) clearInterval(retryTimerRef.current); }; }, []);
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  useEffect(() => {
-    return () => {
-      if (retryTimerRef.current) clearInterval(retryTimerRef.current);
-    };
-  }, []);
-
-  const showToast = (message, type = 'info', duration = 5000) => {
-    setToast({ message, type, duration });
-  };
-
+  const showToast = (message, type = 'info', duration = 5000) => { setToast({ message, type, duration }); };
   const closeToast = () => setToast(null);
 
   const startRetryTimer = (seconds) => {
@@ -175,64 +179,30 @@ function App() {
     }
   };
 
-  // --- NOVA FUNÇÃO: COPIAR SESSION ID ---
   const handleCopySessionId = () => {
     navigator.clipboard.writeText(sessionId);
-    showToast("Session ID copied to clipboard! 📋", "success", 2000);
+    showToast("Session ID copied!", "success", 2000);
   };
 
-  // Função para criar nova sessão (Limpar memória real)
   const handleNewSession = () => {
     const newId = generateUUID();
     setSessionId(newId);
-    localStorage.setItem('chat_session_id', newId);
-    setMessages([]); // Limpa a tela
-    showToast("Started new conversation context", "info");         
+    localStorage.setItem(`chat_session_${activeProfile}`, newId);
+    setMessages([]); 
+    showToast(`New conversation started for ${activeProfile}`, "info");         
   };
 
-  // --- NOVA FUNÇÃO: COPIAR MENSAGEM ---
   const handleCopyMessage = (text) => {
     navigator.clipboard.writeText(text);
-    showToast("Markdown copied to clipboard! 📋", "success", 2000);
+    showToast("Markdown copied!", "success", 2000);
   };
 
-  // --- FUNÇÃO DE FEEDBACK ---
   const handleFeedback = async (index, score) => {
-    const message = messages[index];
-    const prevMessage = messages[index - 1]; // Assume que a anterior é a pergunta do usuário
-
+    const message = messages[index]; const prevMessage = messages[index - 1]; 
     if (!message || !prevMessage) return;
-
-    // Atualiza UI Otimisticamente (Marca como votado)
-    const updatedMessages = [...messages];
-    updatedMessages[index] = { ...message, feedback: score };
-    setMessages(updatedMessages);
-
-                                                                                          
-    try {
-      await axios.post(`${BACKEND_URL}/api/feedback/`, {
-        user_question: prevMessage.content,
-        bot_response: message.content,
-        score: score,
-        comment: "" 
-      });
-      if (score > 0) showToast("Obrigado pelo feedback positivo! 👍", "success", 2000);
-      else showToast("Obrigado! Vamos melhorar com seu feedback. 👎", "info", 2000);
-    } catch (error) {
-      console.error("Feedback error:", error);
-      
-      // Tratamento de erro detalhado para Debug
-      const status = error.response?.status;
-      const detail = error.response?.data?.detail;
-      const errorMsg = status ? `Erro ${status}: ${detail || 'Falha no servidor'}` : error.message;
-      
-      showToast(`Falha ao enviar feedback: ${errorMsg}`, "error");
-
-      // Reverte o estado visual se falhar (para o usuário poder tentar de novo)
-      const revertedMessages = [...messages];
-      revertedMessages[index] = { ...message, feedback: null };
-      setMessages(revertedMessages);
-    }
+    const updatedMessages = [...messages]; updatedMessages[index] = { ...message, feedback: score }; setMessages(updatedMessages);
+    try { await axios.post(`${BACKEND_URL}/api/feedback/`, { user_question: prevMessage.content, bot_response: message.content, score: score, comment: "" }); if (score > 0) showToast("Thanks!", "success", 2000); else showToast("Noted.", "info", 2000); } 
+    catch { showToast("Failed to send feedback", "error"); }
   };
 
   const handleSubmit = async (e) => {
@@ -246,21 +216,13 @@ function App() {
     setLoading(true);
 
     try {
-      // 1. Cria a mensagem do assistente vazia inicialmente
-      const assistantMsgId = new Date().getTime(); // ID temporário
-      setMessages(prev => [...prev, { 
-          role: 'assistant', 
-          content: '', 
-          timestamp: new Date().toISOString(),
-          id: assistantMsgId
-      }]);
+      const assistantMsgId = new Date().getTime(); 
+      setMessages(prev => [...prev, { role: 'assistant', content: '', timestamp: new Date().toISOString(), id: assistantMsgId }]);
 
-      // 2. Inicia o Fetch
       const response = await fetch(`${BACKEND_URL}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userInput, session_id: sessionId })
-                                                            
       });
 
       if (!response.ok) {
@@ -268,136 +230,73 @@ function App() {
         throw new Error("Network response was not ok");
       }
 
-      // 3. Lê o Stream
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      let buffer = ""; // Buffer para texto acumulado
-      let sources = []; // Buffer para fontes
+      let buffer = ""; 
+      let sources = []; 
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         const chunk = decoder.decode(value, { stream: true });
-        // O stream pode mandar pedaços de JSON quebrados, ou múltiplos JSONs na mesma linha se for muito rápido.
-        // A nossa API manda NDJSON (um JSON por linha).
         const lines = chunk.split('\n');
-        
         for (const line of lines) {
             if (!line.trim()) continue;
             try {
                 const data = JSON.parse(line);
-                
                 if (data.type === 'token') {
                     buffer += data.content;
-                    // Atualiza o estado com o texto acumulado em tempo real
                     setMessages(prev => {
                         const newMsgs = [...prev];
                         const lastMsg = newMsgs[newMsgs.length - 1];
-                        if (lastMsg.role === 'assistant') {
-                            lastMsg.content = buffer;
-                        }
+                        if (lastMsg.role === 'assistant') lastMsg.content = buffer;
                         return newMsgs;
                     });
-                } else if (data.type === 'sources') {
-                    sources = data.content;
-                } else if (data.type === 'error') {
-                    throw new Error(data.content);
-                }
-            } catch (e) {
-                // Se der erro de parse (linha incompleta), ignora e espera o resto no próximo chunk
-                // Em NDJSON robusto precisaria de buffer de linha, mas para este demo simples ok.
-            }
+                } else if (data.type === 'sources') { sources = data.content; } 
+                else if (data.type === 'error') { throw new Error(data.content); }
+            } catch (e) {}
         }
       }
 
-      // 4. Finalização: Adiciona fontes ao texto se houver
       if (sources.length > 0) {
           const footer = "\n\n---\n📚 **Fontes Consultadas:**\n" + sources.map(s => `- \`${s}\``).join('\n');
           setMessages(prev => {
               const newMsgs = [...prev];
               const lastMsg = newMsgs[newMsgs.length - 1];
-              lastMsg.content = buffer + footer; // Garante formatação final
+              lastMsg.content = buffer + footer; 
               return newMsgs;
           });
       }
-
     } catch (error) {
       let errorMsg = 'Connection error.';
-                                           
       if (error.message.includes('Rate limit')) errorMsg = 'Muitas requisições. Aguarde um pouco.';
-      
       setMessages(prev => {
-          // Remove a mensagem vazia ou substitui por erro
           const newMsgs = [...prev];
           const lastMsg = newMsgs[newMsgs.length - 1];
-          if (lastMsg.role === 'assistant') {
-              lastMsg.content = errorMsg;
-              lastMsg.error = true;
-          }
+          if (lastMsg.role === 'assistant') { lastMsg.content = errorMsg; lastMsg.error = true; }
           return newMsgs;
       });
       showToast(errorMsg, 'error');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const handleFileUpload = async (event) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
-
-    setIngesting(true);
-    setShowIngestionMenu(false);
-    setIngestionMessage(`Uploading ${files.length} PDF(s)...`);
-
+    const files = event.target.files; if (!files || files.length === 0) return;
+    setIngesting(true); setShowIngestionMenu(false); setIngestionMessage(`Uploading ${files.length} PDF(s)...`);
     try {
-      const formData = new FormData();
-      for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
-
+      const formData = new FormData(); for (let i = 0; i < files.length; i++) formData.append('files', files[i]);
       const response = await axios.post(`${BACKEND_URL}/api/ingest-pdf`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
-      
-      if (response.data.status === 'success') {
-        showToast(`${response.data.message}`, 'success');
-        checkSystemHealth();
-        checkIndexStatus();
-      } else {
-        showToast(response.data.message, 'error');
-      }
-    } catch (error) {
-      showToast('Upload failed', 'error');
-    } finally {
-      setIngesting(false);
-      setIngestionMessage('');
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
+      if (response.data.status === 'success') { showToast(`${response.data.message}`, 'success'); checkSystemHealth(); checkIndexStatus(); } else { showToast(response.data.message, 'error'); }
+    } catch (error) { showToast('Upload failed', 'error'); } finally { setIngesting(false); setIngestionMessage(''); if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
 
   const handleUrlIngestion = async () => {
-    if (!urlInput.trim()) return;
-    setIngesting(true);
-    setShowUrlInput(false);
-    setIngestionMessage(`Processing URL...`);
-
+    if (!urlInput.trim()) return; setIngesting(true); setShowUrlInput(false); setIngestionMessage(`Processing URL...`);
     try {
-      const formData = new FormData();
-      formData.append('url', urlInput);
+      const formData = new FormData(); formData.append('url', urlInput);
       const response = await axios.post(`${BACKEND_URL}/api/ingest-url`, formData);
-      
-      if (response.data.status === 'success') {
-        showToast('URL Ingested successfully', 'success');
-        checkSystemHealth();
-        checkIndexStatus();
-      } else {
-        showToast(response.data.message, 'error');
-      }
-    } catch (error) {
-      showToast('URL Ingest failed', 'error');
-    } finally {
-      setIngesting(false);
-      setIngestionMessage('');
-      setUrlInput('');
-    }
+      if (response.data.status === 'success') { showToast('URL Ingested successfully', 'success'); checkSystemHealth(); checkIndexStatus(); } else { showToast(response.data.message, 'error'); }
+    } catch (error) { showToast('URL Ingest failed', 'error'); } finally { setIngesting(false); setIngestionMessage(''); setUrlInput(''); }
   };
 
   return (
@@ -409,6 +308,19 @@ function App() {
         </div>
 
         <div className="sidebar-content">
+          
+          {/* SELETOR DE PERFIL */}
+          {profiles.length > 0 && (
+            <div className="profile-selector">
+                <label>Active Profile:</label>
+                <select value={activeProfile} onChange={handleProfileSwitch} className="profile-dropdown">
+                    {profiles.map(p => (
+                        <option key={p} value={p}>{p.toUpperCase()}</option>
+                    ))}
+                </select>
+            </div>
+          )}
+
           <div className="status-section">
             <h3>📊 Status</h3>
             {systemStatus && (
@@ -421,16 +333,11 @@ function App() {
                 }
                 <div className="status-details">
                   <div className="status-item"><span>API Key:</span><span>{systemStatus.api_key_configured ? '✅' : '❌'}</span></div>
-                  <div className="status-item"><span>Database:</span><span>{systemStatus.database_loaded ? '✅' : '❌'}</span></div>
-                  <div 
-                    className="status-item" 
-                    onClick={handleCopySessionId} 
-                    style={{cursor: 'pointer'}} 
-                    title="Click to copy Session ID"
-                  >
+                  <div className="status-item"><span>DB:</span><span>{systemStatus.database_loaded ? '✅' : '❌'}</span></div>
+                  <div className="status-item" onClick={handleCopySessionId} style={{cursor: 'pointer'}} title="Click to copy Session ID">
                     <span>Session:</span>
                     <span style={{fontSize: '11px', fontFamily: 'monospace', textDecoration: 'underline dotted'}}>
-                      {sessionId.slice(0, 6)}...
+                      {sessionId ? sessionId.slice(0, 6) : '...'}...
                     </span>
                   </div>
                 </div>
@@ -443,6 +350,7 @@ function App() {
             <div className="index-section">
               <h3>📊 Knowledge Base</h3>
               <p className="index-count">{indexStatus.document_count} chunks</p>
+              {/* RESTAURAÇÃO: Exibe o nome da coleção (DB) se existir */}
               {indexStatus.collection_name && 
                 <p className="option-desc">Collection: {indexStatus.collection_name}</p>
               }
@@ -450,6 +358,7 @@ function App() {
             </div>
           )}
 
+          {/* RESTAURAÇÃO: A Seção INFO/About completa */}
           <div className="info-section">
             <h3>ℹ️ About</h3>
             <p className="info-text">
@@ -463,26 +372,14 @@ function App() {
           </div>
 
           <div className="actions-section">
-            <button 
-              onClick={() => setShowIngestionMenu(!showIngestionMenu)} 
-              className="action-button ingestion-button"
-              disabled={ingesting}
-            >
-              📚 Add Knowledge
-            </button>
-            
+            <button onClick={() => setShowIngestionMenu(!showIngestionMenu)} className="action-button ingestion-button" disabled={ingesting}>📚 Add Knowledge</button>
             {showIngestionMenu && !ingesting && (
               <div className="ingestion-menu">
-                <button onClick={() => fileInputRef.current?.click()} className="ingestion-option">
-                  📄 Upload PDF Files
-                </button>
+                <button onClick={() => fileInputRef.current?.click()} className="ingestion-option">📄 Upload PDF Files</button>
                 <input ref={fileInputRef} type="file" accept=".pdf" multiple style={{ display: 'none' }} onChange={handleFileUpload} />
-                <button onClick={() => { setShowUrlInput(true); setShowIngestionMenu(false); }} className="ingestion-option">
-                  🌐 From URL
-                </button>
+                <button onClick={() => { setShowUrlInput(true); setShowIngestionMenu(false); }} className="ingestion-option">🌐 From URL</button>
               </div>
             )}
-            
             {showUrlInput && !ingesting && (
               <div className="url-input-container">
                 <input type="text" value={urlInput} onChange={(e) => setUrlInput(e.target.value)} placeholder="https://..." className="url-input" />
@@ -492,18 +389,13 @@ function App() {
                 </div>
               </div>
             )}
-            
             {ingestionMessage && <div className={`ingestion-status ${ingesting ? 'ingesting' : ''}`}>{ingestionMessage}</div>}
           </div>
 
           <div className="actions-section">
-            <button onClick={() => setShowLogs(true)} className="action-button logs-button">
-              📊 System Logs
-            </button>
+            <button onClick={() => setShowLogs(true)} className="action-button logs-button">📊 System Logs</button>
           </div>
           <button onClick={handleNewSession} className="clear-button">✨ New Chat</button>
-
-          {messages.length > 0 && <button onClick={() => setMessages([])} className="clear-button">🗑️ Clear Chat</button>}
         </div>
       </div>
 
@@ -539,33 +431,11 @@ function App() {
                     </div>
                     <div className="message-footer">
                         <span className="message-time">{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                        
-                        {/* --- FEEDBACK BUTTONS --- */}
                         {msg.role === 'assistant' && !msg.error && (
                             <div className="feedback-actions">
-                                <button 
-                                  className="feedback-btn" 
-                                  onClick={() => handleCopyMessage(msg.content)} 
-                                  title="Copy Markdown"
-                                >
-                                  📋
-                                </button>
-                                <button 
-                                    className={`feedback-btn ${msg.feedbackGiven === 1 ? 'active' : ''}`}
-                                    onClick={() => handleFeedback(index, 1)}
-                                    disabled={msg.feedbackGiven}
-                                    title="Good response"
-                                >
-                                    👍
-                                </button>
-                                <button 
-                                    className={`feedback-btn ${msg.feedbackGiven === -1 ? 'active' : ''}`}
-                                    onClick={() => handleFeedback(index, -1)}
-                                    disabled={msg.feedbackGiven}
-                                    title="Bad response"
-                                >
-                                    👎
-                                </button>
+                                <button className="feedback-btn" onClick={() => handleCopyMessage(msg.content)} title="Copy Markdown">📋</button>
+                                <button className={`feedback-btn ${msg.feedback === 1 ? 'active-like' : ''}`} onClick={() => handleFeedback(index, 1)} disabled={msg.feedback !== undefined && msg.feedback !== null}>👍</button>
+                                <button className={`feedback-btn ${msg.feedback === -1 ? 'active-dislike' : ''}`} onClick={() => handleFeedback(index, -1)} disabled={msg.feedback !== undefined && msg.feedback !== null}>👎</button>
                             </div>
                         )}
                     </div>
@@ -578,9 +448,7 @@ function App() {
             <div className="message message-assistant">
               <div className="message-icon">{config.logo_emoji}</div>
               <div className="message-content">
-                <div className="loading-indicator">
-                  <div className="loading-dot"></div><div className="loading-dot"></div><div className="loading-dot"></div>
-                </div>
+                <div className="loading-indicator"><div className="loading-dot"></div><div className="loading-dot"></div><div className="loading-dot"></div></div>
               </div>
             </div>
           )}
@@ -589,17 +457,8 @@ function App() {
 
         <div className="input-container">
           <form onSubmit={handleSubmit} className="input-form">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={isRateLimited ? `Wait ${retryTimer}s...` : `Ask ${config.app_name}...`}
-              className="chat-input"
-              disabled={loading || isRateLimited}
-            />
-            <button type="submit" className="send-button" disabled={loading || !input.trim() || isRateLimited}>
-              {loading ? '⏳' : isRateLimited ? `⏱️` : '🚀'}
-            </button>
+            <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder={isRateLimited ? `Wait ${retryTimer}s...` : `Ask ${config.app_name}...`} className="chat-input" disabled={loading || isRateLimited} />
+            <button type="submit" className="send-button" disabled={loading || !input.trim() || isRateLimited}>{loading ? '⏳' : isRateLimited ? `⏱️` : '🚀'}</button>
           </form>
         </div>
       </div>

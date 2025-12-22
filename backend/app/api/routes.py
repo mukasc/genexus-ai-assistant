@@ -8,18 +8,54 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse
 from tenacity import RetryError
+from pydantic import BaseModel
 
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.config import APP_CONFIG, DEFAULT_CONFIG, API_KEY
+from app.config import APP_CONFIG, DEFAULT_CONFIG, API_KEY, GLOBAL_STATE, save_active_profile
 from app.logging_config import logger, CURRENT_LOG_FILE
 from app.schemas import ChatRequest, ChatResponse, IngestionResponse, HealthResponse, IndexStatusResponse
 from app.core import rag
 from app.core.limiter import limiter
 
 router = APIRouter()
+
+# --- NOVOS ENDPOINTS DE PERFIL ---
+
+class ProfileSwitchRequest(BaseModel):
+    profile_id: str
+
+@router.get("/config/profiles")
+async def get_available_profiles():
+    """Retorna lista de perfis disponíveis e qual está ativo."""
+    return {
+        "active": GLOBAL_STATE.get("active_profile"),
+        "profiles": list(GLOBAL_STATE.get("profiles", {}).keys())
+    }
+
+@router.post("/config/switch")
+async def switch_profile(req: ProfileSwitchRequest):
+    """Troca o perfil ativo e reinicia o sistema RAG."""
+    try:
+        if req.profile_id not in GLOBAL_STATE.get("profiles", {}):
+            raise HTTPException(status_code=400, detail="Profile not found")
+        
+        # 1. Salva e Atualiza APP_CONFIG
+        save_active_profile(req.profile_id)
+        logger.info(f"Switched to profile: {req.profile_id}")
+        
+        # 2. Reinicia o RAG para pegar a nova collection_name e system_prompt
+        # Forçamos a reinicialização zerando as variáveis globais do módulo rag
+        rag.rag_chain = None
+        rag.vectorstore_instance = None
+        result = rag.initialize_rag_system()
+        
+        return {"status": "success", "message": f"Switched to {req.profile_id}", "rag_status": result}
+    except Exception as e:
+        logger.error(f"Error switching profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Endpoint de Logs ---
 @router.get("/logs")
