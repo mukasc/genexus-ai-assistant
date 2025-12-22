@@ -190,6 +190,12 @@ function App() {
     showToast("Started new conversation context", "info");         
   };
 
+  // --- NOVA FUNÇÃO: COPIAR MENSAGEM ---
+  const handleCopyMessage = (text) => {
+    navigator.clipboard.writeText(text);
+    showToast("Markdown copied to clipboard! 📋", "success", 2000);
+  };
+
   // --- FUNÇÃO DE FEEDBACK ---
   const handleFeedback = async (index, score) => {
     const message = messages[index];
@@ -537,6 +543,13 @@ function App() {
                         {/* --- FEEDBACK BUTTONS --- */}
                         {msg.role === 'assistant' && !msg.error && (
                             <div className="feedback-actions">
+                                <button 
+                                  className="feedback-btn" 
+                                  onClick={() => handleCopyMessage(msg.content)} 
+                                  title="Copy Markdown"
+                                >
+                                  📋
+                                </button>
                                 <button 
                                     className={`feedback-btn ${msg.feedbackGiven === 1 ? 'active' : ''}`}
                                     onClick={() => handleFeedback(index, 1)}
